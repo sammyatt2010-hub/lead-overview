@@ -56,7 +56,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-chart,.st-key-card-table,.st-key-card-login,.st-key-card-empty{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-chart,.st-key-card-table,.st-key-card-week,.st-key-card-login,.st-key-card-empty{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
 [data-baseweb="input"]>div,[data-baseweb="base-input"]{background:transparent!important}
@@ -92,6 +92,19 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-status .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .pe-status .ok{color:var(--good)}.pe-status .idle{color:var(--faint)}.pe-status .off{color:var(--bad)}
 /* KPI tiles: coloured top edge = the app */
+.lo-totals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:14px}
+@media (max-width:900px){.lo-totals{grid-template-columns:1fr}}
+.lo-total{background:linear-gradient(135deg,rgba(124,131,255,.16) 0%,rgba(56,214,245,.08) 100%);border:1px solid rgba(124,131,255,.32);border-radius:16px;padding:18px 22px;display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.lo-total .t{font-size:.74rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#B9BDFF;min-width:150px}
+.lo-total .t b{display:block;font-size:1.05rem;letter-spacing:-.01em;text-transform:none;color:var(--text);margin-top:4px}
+.lo-total .n{display:flex;flex-direction:column}.lo-total .n .v{font-size:2.3rem;font-weight:800;letter-spacing:-.03em;color:var(--text);line-height:1}
+.lo-total .n .k{font-size:.7rem;color:var(--muted);margin-top:6px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.lo-total .n.main .v{font-size:2.8rem;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lo-week{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+@media (max-width:900px){.lo-week{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.lo-week div.c{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.lo-week .v{font-size:1.5rem;font-weight:800;color:var(--text)}.lo-week .l{font-size:.78rem;color:var(--muted);margin-top:2px}
+.lo-week .d{font-size:.74rem;margin-top:6px;font-weight:600}.lo-week .d.up{color:var(--good)}.lo-week .d.flat{color:var(--muted)}
 .lo-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
 @media (max-width:1400px){.lo-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1100px){.lo-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -317,7 +330,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
     for cn, r in zoho_leads.items():
         if not isinstance(r, dict) or r.get("status") != "created":
             continue
-        rows.append({"When": parse_when(r.get("at")), "App": "Prospect Engine", "Activity": "Added to Zoho",
+        rows.append({"When": parse_when(r.get("at")), "App": "Prospect Engine", "Activity": "Added to Zoho", "Sector": "",
                      "Firm": r.get("firm") or cn, "Contact": "", "Email": "", "Detail": "New lead created",
                      "By": r.get("by") or "", "How": "Zoho", "Zoho": zoho_url("Leads", r.get("id"))})
 
@@ -327,7 +340,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
             continue
         z = zoho_leads.get(cn) or {}
         link = zoho_url("Accounts" if z.get("status") == "customer" else "Leads", z.get("id"))
-        rows.append({"When": parse_when(r.get("sent_at")), "App": "Prospect Engine", "Activity": "Emailed",
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Prospect Engine", "Activity": "Emailed", "Sector": r.get("vertical") or "",
                      "Firm": r.get("company_name") or cn, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
                      "Detail": r.get("subject") or r.get("vertical") or "", "By": r.get("sent_by") or "",
                      "How": how_sent(r), "Zoho": link})
@@ -336,7 +349,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
     for key, r in logs.get("lr_sent", {}).items():
         if not isinstance(r, dict) or not is_email(r):
             continue
-        rows.append({"When": parse_when(r.get("sent_at")), "App": "Lead Revival", "Activity": "Emailed",
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Lead Revival", "Activity": "Emailed", "Sector": r.get("vertical") or "",
                      "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
                      "Detail": r.get("subject") or "", "By": r.get("sent_by") or "", "How": how_sent(r),
                      "Zoho": zoho_url("Leads", key)})
@@ -346,7 +359,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
         if not isinstance(r, dict) or not (r.get("to") or r.get("via") == "zoho"):
             continue
         offers = ", ".join(r.get("offers") or [])
-        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Upsell email",
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Upsell email", "Sector": "",
                      "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
                      "Detail": (r.get("subject") or "") + (f" · {offers}" if offers else ""), "By": r.get("sent_by") or "",
                      "How": how_sent(r), "Zoho": zoho_url("Accounts", key)})
@@ -357,7 +370,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
             continue
         cid = str(r.get("campaign") or key.split("|")[0])
         name = CAMPAIGN_NAMES.get(cid, cid)
-        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Campaign email",
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Campaign email", "Sector": "",
                      "Firm": r.get("account") or "", "Contact": r.get("contact") or "", "Email": r.get("to") or "",
                      "Detail": f"Campaign {cid[1:]}: {name}", "By": r.get("sent_by") or "", "How": "Sent from Zoho",
                      "Zoho": zoho_url("Accounts", r.get("account_id"))})
@@ -366,16 +379,272 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
     for key, r in logs.get("mp_sent", {}).items():
         if not isinstance(r, dict) or not is_email(r):
             continue
-        rows.append({"When": parse_when(r.get("sent_at")), "App": "MY PA", "Activity": "Trial offered",
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "MY PA", "Activity": "Trial offered", "Sector": r.get("vertical") or "",
                      "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
                      "Detail": r.get("subject") or "", "By": r.get("sent_by") or "", "How": how_sent(r),
                      "Zoho": zoho_url("Leads", key)})
 
-    cols = ["When", "App", "Activity", "Firm", "Contact", "Email", "Detail", "By", "How", "Zoho"]
+    cols = ["When", "App", "Activity", "Sector", "Firm", "Contact", "Email", "Detail", "By", "How", "Zoho"]
     df = pd.DataFrame(rows, columns=cols)
     if not df.empty:
         df = df.sort_values("When", ascending=False, na_position="last").reset_index(drop=True)
     return df
+
+
+# ==========================================
+# Weekly summary (last 7 days): numbers, a one-page PDF and a copy-ready email text
+# ==========================================
+def week_stats(ev: pd.DataFrame, end: date) -> Dict[str, Any]:
+    """Highlights for the 7 days ending `end` (inclusive), compared with the 7 days before. No firm names."""
+    start, prev_start = end - timedelta(days=6), end - timedelta(days=13)
+    d = ev[ev["When"].notna()].copy()
+    d["Day"] = d["When"].apply(lambda x: x.date())
+    cur = d[(d["Day"] >= start) & (d["Day"] <= end)]
+    prev = d[(d["Day"] >= prev_start) & (d["Day"] < start)]
+    em_cur, em_prev = cur[cur["Activity"].isin(EMAIL_ACTS)], prev[prev["Activity"].isin(EMAIL_ACTS)]
+    em_all = ev[ev["Activity"].isin(EMAIL_ACTS)]
+    per_app = []
+    for app in APPS:
+        per_app.append({
+            "app": app,
+            "week": int((em_cur["App"] == app).sum()),
+            "prev": int((em_prev["App"] == app).sum()),
+            "all": int((em_all["App"] == app).sum()),
+        })
+    days = [start + timedelta(days=i) for i in range(7)]
+    daily = {day: {app: int(((em_cur["Day"] == day) & (em_cur["App"] == app)).sum()) for app in APPS} for day in days}
+    busiest = max(days, key=lambda x: sum(daily[x].values())) if len(em_cur) else None
+    sectors = (em_cur[em_cur["Sector"].astype(bool)]["Sector"].value_counts().head(4)
+               if "Sector" in em_cur else pd.Series(dtype=int))
+    camps = em_cur[em_cur["Activity"] == "Campaign email"]["Detail"].value_counts().head(3)
+    return {
+        "start": start, "end": end,
+        "emails": len(em_cur), "emails_prev": len(em_prev), "emails_all": len(em_all),
+        "leads": int((cur["Activity"] == "Added to Zoho").sum()),
+        "leads_prev": int((prev["Activity"] == "Added to Zoho").sum()),
+        "leads_all": int((ev["Activity"] == "Added to Zoho").sum()),
+        "via_zoho": int((em_cur["How"] == "Sent from Zoho").sum()),
+        "trials": int((em_cur["Activity"] == "Trial offered").sum()),
+        "per_app": per_app, "daily": daily, "busiest": busiest,
+        "busiest_n": sum(daily[busiest].values()) if busiest else 0,
+        "sectors": [(k, int(v)) for k, v in sectors.items()],
+        "campaigns": [(k, int(v)) for k, v in camps.items()],
+        "active_days": sum(1 for x in days if sum(daily[x].values())),
+    }
+
+
+def _change(now_v: int, before: int) -> str:
+    if before == 0:
+        return "new this week" if now_v else "no change"
+    pct = round((now_v - before) / before * 100)
+    return f"{'+' if pct >= 0 else ''}{pct}% vs previous week"
+
+
+def _rng(ws: Dict[str, Any]) -> str:
+    return f"{ws['start'].strftime('%a %d %b')} - {ws['end'].strftime('%a %d %b %Y')}"
+
+
+def weekly_text(ws: Dict[str, Any]) -> str:
+    lines = [f"Sales automation: weekly summary ({_rng(ws)})", ""]
+    lines.append(f"- {ws['emails']:,} emails sent across the suite ({_change(ws['emails'], ws['emails_prev'])})")
+    lines.append(f"- {ws['leads']:,} new leads added to Zoho by Prospect Engine ({_change(ws['leads'], ws['leads_prev'])})")
+    if ws["emails"]:
+        lines.append(f"- {round(ws['via_zoho'] / ws['emails'] * 100)}% sent straight from Zoho, so every one is logged on the record")
+    if ws["busiest"]:
+        lines.append(f"- Busiest day: {ws['busiest'].strftime('%A')} with {ws['busiest_n']:,} emails")
+    lines += ["", "By app (this week / previous week / all time):"]
+    for a in ws["per_app"]:
+        lines.append(f"- {a['app']}: {a['week']:,} / {a['prev']:,} / {a['all']:,}")
+    if ws["sectors"]:
+        lines += ["", "Top sectors pitched: " + ", ".join(f"{k} ({v})" for k, v in ws["sectors"])]
+    if ws["campaigns"]:
+        lines.append("Customer campaigns sent: " + ", ".join(f"{k} ({v})" for k, v in ws["campaigns"]))
+    lines += ["", f"All time: {ws['emails_all']:,} emails sent and {ws['leads_all']:,} new leads added to Zoho."]
+    return "\n".join(lines)
+
+
+def _pdf_txt(t: str) -> str:
+    rep = {"–": "-", "—": "-", "‘": "'", "’": "'", "“": '"', "”": '"', "…": "...",
+           "·": "-", "→": "->"}
+    for k, v in rep.items():
+        t = t.replace(k, v)
+    return t.encode("latin-1", "replace").decode("latin-1")
+
+
+def _rgb(hex_: str) -> Tuple[int, int, int]:
+    h = hex_.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def weekly_pdf(ws: Dict[str, Any]) -> bytes:
+    from fpdf import FPDF
+    T = _pdf_txt
+    navy, ink, grey, light, accent = (17, 24, 39), (30, 34, 48), (100, 108, 125), (244, 246, 250), (91, 99, 230)
+    pdf = FPDF("P", "mm", "A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+    W, L = 210, 14
+    CW = W - 2 * L
+    # Header
+    pdf.set_fill_color(*navy)
+    pdf.rect(0, 0, W, 36, "F")
+    pdf.set_fill_color(*accent)
+    pdf.rect(0, 36, W, 1.4, "F")
+    pdf.set_xy(L, 9)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(140, 152, 176)
+    pdf.cell(0, 4, T(f"{_secret('REPORT_COMPANY', 'SY COMMUNICATIONS').upper()}  |  SALES AUTOMATION"))
+    pdf.set_xy(L, 14)
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 9, "Weekly summary")
+    pdf.set_xy(L, 24)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(200, 206, 220)
+    pdf.cell(0, 5, T(_rng(ws) + "  |  Prospect Engine, Lead Revival, Customer Growth & MY PA"))
+
+    # Three headline boxes
+    y = 46
+    gap = 5
+    bw = (CW - 2 * gap) / 3
+    via_pct = f"{round(ws['via_zoho'] / ws['emails'] * 100)}%" if ws["emails"] else "-"
+    boxes = [
+        (f"{ws['emails']:,}", "Emails sent", _change(ws["emails"], ws["emails_prev"])),
+        (f"{ws['leads']:,}", "New leads added to Zoho", _change(ws["leads"], ws["leads_prev"])),
+        (via_pct, "Sent straight from Zoho", "Logged on every record"),
+    ]
+    for i, (big, label, sub) in enumerate(boxes):
+        x = L + i * (bw + gap)
+        pdf.set_fill_color(*light)
+        pdf.rect(x, y, bw, 30, "F")
+        pdf.set_fill_color(*accent)
+        pdf.rect(x, y, bw, 1.2, "F")
+        pdf.set_xy(x + 5, y + 5)
+        pdf.set_font("Helvetica", "B", 22)
+        pdf.set_text_color(*ink)
+        pdf.cell(bw - 10, 10, T(big))
+        pdf.set_xy(x + 5, y + 16)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(bw - 10, 5, T(label))
+        pdf.set_xy(x + 5, y + 22)
+        pdf.set_font("Helvetica", "", 8)
+        good = sub.startswith("+") or sub.startswith("new")
+        pdf.set_text_color(*((22, 140, 90) if good else grey))
+        pdf.cell(bw - 10, 4, T(sub))
+
+    def heading(text: str, yy: float) -> float:
+        pdf.set_xy(L, yy)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(*accent)
+        pdf.cell(0, 5, T(text.upper()))
+        return yy + 8
+
+    # Per-app table
+    y = heading("By app", y + 40)
+    cols = [("App", 70), ("This week", 30), ("Previous week", 32), ("Change", 26), ("All time", 24)]
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.set_text_color(*grey)
+    x = L
+    for name, w in cols:
+        pdf.set_xy(x, y)
+        pdf.cell(w, 6, name, align="L" if name == "App" else "R")
+        x += w
+    y += 7
+    for a in ws["per_app"]:
+        pdf.set_draw_color(225, 228, 236)
+        pdf.line(L, y, L + sum(w for _, w in cols), y)
+        pdf.set_fill_color(*_rgb(APPS[a["app"]]))
+        pdf.rect(L, y + 2.3, 3, 3, "F")
+        ch = a["week"] - a["prev"]
+        vals = [a["app"], f"{a['week']:,}", f"{a['prev']:,}", (f"+{ch}" if ch > 0 else str(ch)) if a["prev"] or a["week"] else "-",
+                f"{a['all']:,}"]
+        x = L
+        for (name, w), v in zip(cols, vals):
+            pdf.set_xy(x + (5 if name == "App" else 0), y + 1)
+            pdf.set_font("Helvetica", "B" if name in ("App", "This week") else "", 9.5)
+            pdf.set_text_color(*ink)
+            pdf.cell(w - (5 if name == "App" else 0), 6, T(v), align="L" if name == "App" else "R")
+            x += w
+        y += 8
+    y += 4
+
+    # Daily chart (stacked bars)
+    y = heading("Emails per day", y)
+    ch_h, base = 48, y + 52
+    days = list(ws["daily"])
+    top = max([sum(ws["daily"][d].values()) for d in days] + [1])
+    slot = CW / 7
+    bar_w = slot * 0.55
+    pdf.set_draw_color(225, 228, 236)
+    pdf.line(L, base, L + CW, base)
+    for i, day in enumerate(days):
+        x = L + i * slot + (slot - bar_w) / 2
+        yy = base
+        total = 0
+        for app in APPS:
+            n = ws["daily"][day][app]
+            if not n:
+                continue
+            h = ch_h * n / top
+            pdf.set_fill_color(*_rgb(APPS[app]))
+            pdf.rect(x, yy - h, bar_w, h, "F")
+            yy -= h
+            total += n
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(*ink)
+        pdf.set_xy(x - 3, yy - 5)
+        pdf.cell(bar_w + 6, 4, str(total) if total else "", align="C")
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*grey)
+        pdf.set_xy(L + i * slot, base + 1.5)
+        pdf.cell(slot, 4, T(day.strftime("%a %d")), align="C")
+    # Legend
+    lx = L
+    ly = base + 8
+    for app, col in APPS.items():
+        pdf.set_fill_color(*_rgb(col))
+        pdf.rect(lx, ly + 1, 3, 3, "F")
+        pdf.set_xy(lx + 4.5, ly)
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(*ink)
+        pdf.cell(40, 5, T(app))
+        lx += pdf.get_string_width(T(app)) + 14
+    y = ly + 12
+
+    # Highlights
+    y = heading("Highlights", y)
+    bullets = []
+    if ws["busiest"]:
+        bullets.append(f"Busiest day was {ws['busiest'].strftime('%A')}, with {ws['busiest_n']:,} emails sent.")
+    bullets.append(f"Emails went out on {ws['active_days']} of the last 7 days.")
+    if ws["sectors"]:
+        bullets.append("Top sectors pitched: " + ", ".join(f"{k} ({v})" for k, v in ws["sectors"]) + ".")
+    if ws["campaigns"]:
+        bullets.append("Customer campaigns sent: " + ", ".join(f"{k} ({v})" for k, v in ws["campaigns"]) + ".")
+    if ws["trials"]:
+        bullets.append(f"{ws['trials']:,} businesses offered a free 7-day MY PA Connect trial.")
+    bullets.append(f"All time: {ws['emails_all']:,} emails sent and {ws['leads_all']:,} new leads added to Zoho.")
+    for b in bullets:
+        if y > 268:
+            break
+        pdf.set_fill_color(*accent)
+        pdf.rect(L, y + 2, 1.6, 1.6, "F")
+        pdf.set_xy(L + 4, y)
+        pdf.set_font("Helvetica", "", 9.5)
+        pdf.set_text_color(*ink)
+        pdf.multi_cell(CW - 4, 5, T(b))
+        y = pdf.get_y() + 2
+
+    # Footer
+    pdf.set_fill_color(*navy)
+    pdf.rect(0, 284, W, 13, "F")
+    pdf.set_xy(L, 288)
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_text_color(160, 170, 190)
+    pdf.cell(0, 4, T(f"Generated from Lead Overview on {datetime.now(UK).strftime('%d %b %Y %H:%M')}. Counts emails"
+                     " sent and new Zoho leads; no individual companies are named."))
+    out = pdf.output()
+    return bytes(out) if not isinstance(out, str) else out.encode("latin-1", "replace")
 
 
 # ==========================================
@@ -490,6 +759,34 @@ def kpi(app: str, label: str, today_v: int, total_v: int, foot: str, single: boo
             f'<div class="l">{esc(label)}</div>{body}<div class="foot">{esc(foot)}</div></div>')
 
 
+_all_em = events[events["Activity"].isin(EMAIL_ACTS)] if not events.empty else events
+_all_new = events[events["Activity"] == "Added to Zoho"] if not events.empty else events
+_last7 = today - timedelta(days=6)
+
+
+def _n(df_: pd.DataFrame, since: Optional[date] = None, only_day: Optional[date] = None) -> int:
+    if df_.empty:
+        return 0
+    dd = df_["When"].apply(lambda x: x.date() if x else None)
+    if only_day:
+        return int((dd == only_day).sum())
+    if since:
+        return int(dd.apply(lambda x: bool(x) and x >= since).sum())
+    return len(df_)
+
+
+def total_card(title: str, sub: str, df_: pd.DataFrame) -> str:
+    return (f'<div class="lo-total"><div class="t">{esc(title)}<b>{esc(sub)}</b></div>'
+            f'<div class="n"><div class="v">{_n(df_, only_day=today):,}</div><div class="k">Today</div></div>'
+            f'<div class="n"><div class="v">{_n(df_, since=_last7):,}</div><div class="k">Last 7 days</div></div>'
+            f'<div class="n main"><div class="v">{_n(df_):,}</div><div class="k">All time</div></div></div>')
+
+
+render_html('<div class="lo-totals">'
+            + total_card("All apps", "Emails sent", _all_em)
+            + total_card("All apps", "New leads added to Zoho", _all_new)
+            + "</div>")
+
 render_html(
     '<div class="lo-kpis">'
     + kpi("Prospect Engine", "New prospects added to Zoho", pe_added_today, pe_added_total,
@@ -546,9 +843,46 @@ with st.container(key="card-chart"):
     except Exception:
         st.altair_chart(chart, use_container_width=True)
 
+# ---------------- Weekly summary ----------------
+with st.container(key="card-week"):
+    section_header("02", "Last 7 days summary", "Highlights only, no company names. Download the PDF or copy the text"
+                   " into an email for the team.")
+    _wc, _ = st.columns([1, 3])
+    wk_end = _wc.date_input("Week ending", value=today, max_value=today, format="DD/MM/YYYY", key="wk_end",
+                           help="Defaults to today, covering the last 7 days. Pick an earlier date for a past week.")
+    ws = week_stats(events, wk_end)
+
+    def _delta(now_v: int, before: int) -> str:
+        txt = _change(now_v, before)
+        return f'<div class="d {"up" if txt.startswith(("+", "new")) else "flat"}">{esc(txt)}</div>'
+
+    render_html(
+        '<div class="lo-week">'
+        f'<div class="c"><div class="v">{ws["emails"]:,}</div><div class="l">Emails sent</div>{_delta(ws["emails"], ws["emails_prev"])}</div>'
+        f'<div class="c"><div class="v">{ws["leads"]:,}</div><div class="l">New leads added to Zoho</div>{_delta(ws["leads"], ws["leads_prev"])}</div>'
+        f'<div class="c"><div class="v">{(str(round(ws["via_zoho"] / ws["emails"] * 100)) + "%") if ws["emails"] else "–"}</div>'
+        '<div class="l">Sent straight from Zoho</div><div class="d flat">Logged on every record</div></div>'
+        f'<div class="c"><div class="v">{ws["busiest"].strftime("%a") if ws["busiest"] else "–"}</div><div class="l">Busiest day</div>'
+        f'<div class="d flat">{ws["busiest_n"]:,} emails</div></div>'
+        "</div>"
+    )
+    w1, w2 = st.columns([1, 2])
+    with w1:
+        try:
+            pdf_bytes = weekly_pdf(ws)
+            st.download_button("⬇  Download weekly summary (PDF)", data=pdf_bytes, type="primary",
+                               file_name=f"Sales_automation_summary_{ws['start'].isoformat()}_to_{ws['end'].isoformat()}.pdf",
+                               mime="application/pdf", **FULL_WIDTH)
+        except Exception as exc:
+            st.error(f"Couldn't build the PDF ({exc.__class__.__name__}).")
+        st.caption(f"Covers {_rng(ws)}.")
+    with w2:
+        with st.expander("📋  Copy as text for an email", expanded=False):
+            st.code(weekly_text(ws), language=None)
+
 # ---------------- Table ----------------
 with st.container(key="card-table"):
-    section_header("02", "All activity", "Newest first. Filter, search, then open any record in Zoho.")
+    section_header("03", "All activity", "Newest first. Filter, search, then open any record in Zoho.")
     f1, f2, f3, f4 = st.columns([1, 1.3, 1.3, 1.4])
     with f1:
         period = st.selectbox("Period", ["Today", "Last 7 days", "Last 30 days", "This month", "All time"], index=4)

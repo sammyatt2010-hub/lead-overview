@@ -1,0 +1,11 @@
+# Prospect Engine theme — also styles the company table (which CSS can't reach)
+[theme]
+base = "dark"
+primaryColor = "#F0444F"
+backgroundColor = "#0A0E1A"
+secondaryBackgroundColor = "#131A2B"
+textColor = "#E7EAF3"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

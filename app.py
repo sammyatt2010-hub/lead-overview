@@ -696,9 +696,7 @@ with st.sidebar:
             badge = '<span class="st off">Can\'t see repo</span>'
         else:
             badge = f'<span class="st off">{esc(stt)}</span>'
-        rows_html.append(f'<div class="pe-status" title="{esc(s["repo"])}/{esc(s["path"])}"><span>{esc(s["label"])}'
-                         f'<br><span style="font-size:.68rem;color:var(--faint)">{esc(s["repo"] or "no repo set")} · '
-                         f'{esc(s["path"])}</span></span>{badge}</div>')
+        rows_html.append(f'<div class="pe-status"><span>{esc(s["label"])}</span>{badge}</div>')
     render_html("".join(rows_html))
     blocked = [s for s in sources if status[s["key"]] == "no_access"]
     if blocked:
@@ -709,7 +707,7 @@ with st.sidebar:
                    + " (and its token with the matching _GITHUB_TOKEN), or give this token access to that repo.")
     errors = [s for s in sources if status[s["key"]] not in ("ok", "missing", "no_access")]
     if errors:
-        st.caption("⚠️ Check the GitHub token for: " + ", ".join(sorted({s['repo'] or '(no repo)' for s in errors})))
+        st.caption("⚠️ Check the GitHub token and repo in Secrets for: " + ", ".join(sorted({s['app'] for s in errors})))
     if any(status[s["key"]] == "missing" for s in sources):
         st.caption("'Nothing yet': the repo is fine but that app hasn't saved that file there yet. Check the app has"
                    " GITHUB_TOKEN and GITHUB_REPO in its own Secrets, and that it's the same repo shown here.")

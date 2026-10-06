@@ -375,7 +375,7 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
                      "Detail": f"Campaign {cid[1:]}: {name}", "By": r.get("sent_by") or "", "How": "Sent from Zoho",
                      "Zoho": zoho_url("Accounts", r.get("account_id"))})
 
-    # MY PA: free 7-day trial emails, keyed by the Zoho lead id
+    # MY PA: free 1-week trial emails, keyed by the Zoho lead id
     for key, r in logs.get("mp_sent", {}).items():
         if not isinstance(r, dict) or not is_email(r):
             continue
@@ -622,7 +622,7 @@ def weekly_pdf(ws: Dict[str, Any]) -> bytes:
     if ws["campaigns"]:
         bullets.append("Customer campaigns sent: " + ", ".join(f"{k} ({v})" for k, v in ws["campaigns"]) + ".")
     if ws["trials"]:
-        bullets.append(f"{ws['trials']:,} businesses offered a free 7-day MY PA Connect trial.")
+        bullets.append(f"{ws['trials']:,} businesses offered a free 1-week MY PA Connect trial.")
     bullets.append(f"All time: {ws['emails_all']:,} emails sent and {ws['leads_all']:,} new leads added to Zoho.")
     for b in bullets:
         if y > 268:
@@ -792,7 +792,7 @@ render_html(
     + kpi("Prospect Engine", "New prospects emailed", pe_em_today, pe_em_total, "Pitch emails to new firms")
     + kpi("Lead Revival", "Lead revivals emailed", lr_today, lr_total, "Old Zoho leads re-contacted")
     + kpi("Customer Growth", "Customer growth emails", cg_today, cg_total, f"{cg_up:,} upsell · {cg_camp:,} campaign")
-    + kpi("MY PA", "Free trials offered", mp_today, mp_total, "MY PA Connect 7-day trial emails")
+    + kpi("MY PA", "Free trials offered", mp_today, mp_total, "MY PA Connect free 1-week trial emails")
     + "</div>"
 )
 

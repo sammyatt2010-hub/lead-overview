@@ -1,7 +1,6 @@
 streamlit>=1.40
 pandas
 requests
-beautifulsoup4
-fpdf2
-pydantic>=2
+altair
 tzdata
+fpdf2

@@ -1,0 +1,626 @@
+"""
+Lead Overview · SY Communications
+A read-only dashboard of every email and new Zoho lead created by the three sales apps:
+Prospect Engine, Lead Revival, Customer Growth and MY PA.
+
+It reads the same JSON logs those apps already save to GitHub, so it never changes Zoho or the logs.
+Secrets: APP_PASSWORD, GITHUB_TOKEN, GITHUB_REPO (see the setup notes at the bottom of this file).
+"""
+import base64
+import hmac
+import html as html_lib
+import inspect
+import json
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+import altair as alt
+import pandas as pd
+import requests
+import streamlit as st
+
+APP_NAME = "Lead Overview"
+APP_TAGLINE = "SY Communications · sales activity"
+UK = ZoneInfo("Europe/London")
+
+# One colour per app, used everywhere (tiles, chart, table). Validated for colour-blind separation on the dark surface.
+APPS = {
+    "Prospect Engine": "#3987e5",
+    "Lead Revival": "#d95926",
+    "Customer Growth": "#199e70",
+    "MY PA": "#c98500",
+}
+CAMPAIGN_NAMES = {
+    "m01": "Introduce the complete portfolio", "m02": "AI call answering", "m03": "Call Scope analytics and QC",
+    "m04": "CRM integration", "m05": "FTTP, SoGEA and Starlink", "m06": "Hosted PBX and modern handsets",
+    "m07": "Business Wi-Fi and networks", "m08": "Mobile apps and flexible working",
+    "m09": "Microsoft 365, IT support and cyber security", "m10": "Live wallboards and dashboards",
+    "m11": "CCTV and site infrastructure", "m12": "Combined services and annual review",
+}
+
+st.set_page_config(page_title=APP_NAME, page_icon="📊", layout="wide")
+
+
+# ==========================================
+# Look & feel (same design as Prospect Engine)
+# ==========================================
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root{--bg:#0A0E1A;--surface:#111827;--surface-2:#161F33;--surface-3:#1C2740;--border:rgba(148,163,184,.14);--border-strong:rgba(148,163,184,.26);--text:#E7EAF3;--muted:#8C98B0;--faint:#5E6A82;--accent:#7C83FF;--accent-2:#38D6F5;--accent-soft:rgba(124,131,255,.14);--good:#34D399;--warn:#FBBF24;--bad:#F87171;--radius:14px;--grad:linear-gradient(135deg,#7C83FF 0%,#38D6F5 100%);}
+html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif!important}
+.stApp{background:radial-gradient(1200px 500px at 85% -10%,rgba(56,214,245,.07),transparent 60%),radial-gradient(900px 500px at 10% -20%,rgba(124,131,255,.10),transparent 60%),var(--bg)}
+[data-testid="stHeader"]{background:transparent}[data-testid="stDecoration"]{display:none}footer{visibility:hidden}
+.block-container{padding-top:1.6rem!important;padding-bottom:3rem!important;max-width:1500px}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
+[data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
+[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+.st-key-card-chart,.st-key-card-table,.st-key-card-login,.st-key-card-empty{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+[data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
+[data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
+[data-baseweb="input"]>div,[data-baseweb="base-input"]{background:transparent!important}
+.stButton button,.stDownloadButton button,.stFormSubmitButton button{border-radius:10px!important;font-weight:600!important;border:1px solid var(--border-strong)!important;background:var(--surface-2)!important;color:var(--text)!important;transition:all .15s ease}
+.stButton button:hover,.stDownloadButton button:hover{border-color:var(--accent)!important;transform:translateY(-1px)}
+.stButton button[kind="primary"],.stFormSubmitButton button,[data-testid="stBaseButton-primary"]{background:var(--grad)!important;border:none!important;color:#0A0E1A!important;box-shadow:0 8px 24px -10px rgba(124,131,255,.8)}
+.stButton button[kind="primary"] p,[data-testid="stBaseButton-primary"] p,.stFormSubmitButton button p{color:#0A0E1A!important;font-weight:700!important}
+[data-testid="stDataFrame"]{border:1px solid var(--border);border-radius:12px;overflow:hidden}
+[data-testid="stExpander"] details{background:var(--surface);border:1px solid var(--border)!important;border-radius:12px!important}
+[data-testid="stAlert"]{border-radius:12px!important}
+.pe-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;padding:6px 2px 22px;margin-bottom:18px;border-bottom:1px solid var(--border)}
+.pe-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-2);margin-bottom:8px}
+.pe-eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+.pe-title{font-size:2.05rem;font-weight:800;letter-spacing:-.035em;line-height:1.1;color:var(--text)}
+.pe-title span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.pe-sub{color:var(--muted);font-size:.95rem;margin-top:8px;max-width:620px}
+.pe-stepper{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:999px;padding:6px}
+.pe-step{display:flex;align-items:center;gap:8px;padding:7px 14px 7px 7px;border-radius:999px;font-size:.82rem;font-weight:600;color:var(--muted);white-space:nowrap}
+.pe-step .num{min-width:24px;height:24px;padding:0 6px;border-radius:999px;display:grid;place-items:center;font-size:.72rem;font-weight:700;border:1px solid var(--border-strong);color:var(--text)}
+.pe-step.active{background:var(--surface-3);color:var(--text)}.pe-step.active .num{background:var(--grad);border:none;color:#0A0E1A}
+.pe-step-sep{width:14px;height:1px;background:var(--border-strong)}
+.pe-section{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.pe-section .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:800;font-size:.85rem;border:1px solid rgba(124,131,255,.3)}
+.pe-section .t{font-size:1.08rem;font-weight:700;color:var(--text)}.pe-section .s{font-size:.82rem;color:var(--muted);margin-top:2px}
+.pe-logo{width:40px;height:40px;border-radius:12px;background:var(--grad);display:grid;place-items:center;color:#0A0E1A;box-shadow:0 10px 24px -10px rgba(124,131,255,.9)}
+.pe-login-head{text-align:center;margin:8vh 0 22px}.pe-login-head .pe-logo{width:54px;height:54px;margin:0 auto 16px;border-radius:16px}
+.pe-login-head .t{font-size:1.6rem;font-weight:800;letter-spacing:-.03em;color:var(--text)}.pe-login-head .s{color:var(--muted);font-size:.92rem;margin-top:6px}
+.pe-brand{display:flex;align-items:center;gap:12px;padding:4px 0 18px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.pe-brand .n{font-weight:800;color:var(--text);letter-spacing:-.02em}.pe-brand .s{font-size:.74rem;color:var(--muted)}
+.pe-side-h{font-size:.7rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:18px 0 8px}
+.pe-status{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:.84rem;color:var(--text);padding:6px 0}
+.pe-status .st{font-size:.74rem;font-weight:600;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;flex-shrink:0}
+.pe-status .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pe-status .ok{color:var(--good)}.pe-status .idle{color:var(--faint)}.pe-status .off{color:var(--bad)}
+/* KPI tiles: coloured top edge = the app */
+.lo-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
+@media (max-width:1400px){.lo-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:1100px){.lo-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){.lo-kpis{grid-template-columns:1fr}}
+.lo-kpi{background:linear-gradient(180deg,rgba(22,31,51,.9) 0%,rgba(17,24,39,.9) 100%);border:1px solid var(--border);border-top:3px solid var(--c);border-radius:14px;padding:16px 18px 14px}
+.lo-kpi .app{display:flex;align-items:center;gap:8px;font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lo-kpi .app i{width:9px;height:9px;border-radius:3px;background:var(--c);display:inline-block}
+.lo-kpi .l{font-size:.95rem;font-weight:700;color:var(--text);margin-top:8px}
+.lo-kpi .row{display:flex;align-items:flex-end;gap:22px;margin-top:10px}
+.lo-kpi .v{font-size:2rem;font-weight:800;letter-spacing:-.03em;color:var(--text);line-height:1}
+.lo-kpi .k{font-size:.72rem;color:var(--muted);margin-top:6px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.lo-kpi .v.big{font-size:2.3rem}
+.lo-kpi .foot{font-size:.78rem;color:var(--muted);margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+.pe-empty{text-align:center;padding:30px 10px}.pe-empty .t{font-weight:700;color:var(--text);font-size:1.1rem;margin-top:14px}
+.pe-empty .s{color:var(--muted);margin-top:6px}.pe-empty ol{text-align:left;display:inline-block;color:var(--muted);margin-top:12px}
+</style>
+"""
+
+
+def esc(v: Any) -> str:
+    return html_lib.escape(str(v if v is not None else ""), quote=True)
+
+
+def render_html(markup: str, target=None) -> None:
+    (target or st).markdown("".join(line.strip() for line in markup.splitlines()), unsafe_allow_html=True)
+
+
+def section_header(num: str, title: str, subtitle: str = "") -> None:
+    render_html(f'<div class="pe-section"><div class="badge">{num}</div><div><div class="t">{esc(title)}</div>'
+                + (f'<div class="s">{esc(subtitle)}</div>' if subtitle else "") + "</div></div>")
+
+
+def _full_width() -> Dict[str, Any]:
+    try:
+        if "width" in inspect.signature(st.button).parameters:
+            return {"width": "stretch"}
+    except (TypeError, ValueError):
+        pass
+    return {"use_container_width": True}
+
+
+FULL_WIDTH = _full_width()
+
+
+def columns(spec, **kw):
+    try:
+        return st.columns(spec, vertical_alignment="bottom", **kw)
+    except TypeError:
+        return st.columns(spec, **kw)
+
+
+ICON_CHART = ('<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
+              'stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>')
+
+render_html(CSS)
+
+
+def _secret(name: str, default: str = "") -> str:
+    try:
+        v = st.secrets.get(name, default)
+    except Exception:
+        v = default
+    return str(v or default).strip()
+
+
+# ==========================================
+# Sign in (fails closed: no APP_PASSWORD, no entry)
+# ==========================================
+def check_password() -> bool:
+    configured = _secret("APP_PASSWORD")
+    if not configured:
+        render_html(f'<div class="pe-login-head"><div class="pe-logo">{ICON_CHART}</div><div class="t">App locked</div>'
+                    '<div class="s">APP_PASSWORD isn\'t set in Streamlit Secrets, so access is blocked.</div></div>')
+        return False
+    if st.session_state.get("password_ok"):
+        return True
+
+    def _check():
+        st.session_state["password_ok"] = hmac.compare_digest(
+            st.session_state.get("pw", "").encode("utf-8"), configured.encode("utf-8"))
+        st.session_state["pw_tried"] = True
+        st.session_state.pop("pw", None)
+
+    _, mid, _ = st.columns([1, 1.4, 1])
+    with mid:
+        render_html(f'<div class="pe-login-head"><div class="pe-logo">{ICON_CHART}</div><div class="t">{APP_NAME}</div>'
+                    f'<div class="s">{APP_TAGLINE} · Authorised users only</div></div>')
+        with st.container(key="card-login"):
+            with st.form("login", border=False):
+                st.text_input("Access password", type="password", key="pw", placeholder="Enter your password")
+                st.form_submit_button("Sign in", on_click=_check, type="primary", **FULL_WIDTH)
+            if st.session_state.get("pw_tried") and not st.session_state.get("password_ok"):
+                st.error("Incorrect password. Please try again.")
+    return False
+
+
+if not check_password():
+    st.stop()
+
+
+# ==========================================
+# Reading the apps' logs from GitHub (read only)
+# ==========================================
+def source_list() -> List[Dict[str, str]]:
+    """Where each app keeps its log. Same secret names as the apps, so overrides carry across."""
+    default_repo, default_tok = _secret("GITHUB_REPO"), "GITHUB_TOKEN"
+    pe = _secret("PE_GITHUB_REPO", default_repo)
+    lr = _secret("LR_GITHUB_REPO", default_repo)
+    cg = _secret("CG_GITHUB_REPO", default_repo)
+    mp = _secret("MP_GITHUB_REPO", lr)  # MY PA saves alongside Lead Revival unless told otherwise
+    # Each app can have its own token (e.g. paste each app's own GITHUB_TOKEN); falls back to GITHUB_TOKEN
+    pe_t = "PE_GITHUB_TOKEN" if _secret("PE_GITHUB_TOKEN") else default_tok
+    lr_t = "LR_GITHUB_TOKEN" if _secret("LR_GITHUB_TOKEN") else default_tok
+    cg_t = "CG_GITHUB_TOKEN" if _secret("CG_GITHUB_TOKEN") else default_tok
+    mp_t = "MP_GITHUB_TOKEN" if _secret("MP_GITHUB_TOKEN") else lr_t
+    return [
+        {"key": "pe_sent", "app": "Prospect Engine", "label": "Prospect emails", "repo": pe, "tok": pe_t,
+         "path": _secret("GITHUB_LOG_PATH", "sent_log.json")},
+        {"key": "pe_zoho", "app": "Prospect Engine", "label": "Prospects added to Zoho", "repo": pe, "tok": pe_t,
+         "path": _secret("GITHUB_ZOHO_LEADS_PATH", "zoho_leads.json")},
+        {"key": "lr_sent", "app": "Lead Revival", "label": "Lead Revival emails", "repo": lr, "tok": lr_t,
+         "path": _secret("GITHUB_CRM_LOG_PATH", "crm_sent_log.json")},
+        {"key": "cg_sent", "app": "Customer Growth", "label": "Upsell emails", "repo": cg, "tok": cg_t,
+         "path": _secret("GITHUB_CG_LOG_PATH", "cg_sent_log.json")},
+        {"key": "cg_camp", "app": "Customer Growth", "label": "Campaign emails", "repo": cg, "tok": cg_t,
+         "path": _secret("GITHUB_CG_CAMPAIGN_PATH", "cg_campaign_log.json")},
+        {"key": "mp_sent", "app": "MY PA", "label": "MY PA trial emails", "repo": mp, "tok": mp_t,
+         "path": _secret("GITHUB_MYPA_LOG_PATH", "mypa_sent_log.json")},
+    ]
+
+
+def _clean_token(raw: str) -> str:
+    """Forgives copy-paste slips: stray quotes, spaces, 'Bearer ' or 'token ' in front."""
+    t = (raw or "").strip().strip('"').strip("'").strip()
+    for prefix in ("Bearer ", "bearer ", "token ", "Token "):
+        if t.startswith(prefix):
+            t = t[len(prefix):].strip()
+    return t
+
+
+def fetch_log(repo: str, path: str, branch: str, token_secret: str = "GITHUB_TOKEN") -> Tuple[Dict[str, Any], str]:
+    """Tries the app's own token first, then the main GITHUB_TOKEN if that one is rejected."""
+    tried = []
+    result: Tuple[Dict[str, Any], str] = ({}, "GITHUB_TOKEN / GITHUB_REPO not set")
+    for name in dict.fromkeys([token_secret, "GITHUB_TOKEN"]):
+        token = _clean_token(_secret(name))
+        if not token or token in tried:
+            continue
+        tried.append(token)
+        result = _fetch_log(repo, path, branch, token)
+        if result[1] not in ("token rejected (401)", "no_access"):
+            return result
+    return result
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_log(repo: str, path: str, branch: str, token: str) -> Tuple[Dict[str, Any], str]:
+    """(data, status). status: 'ok', 'missing' (file not created yet), 'no_access' (repo not visible to this token)
+    or an error message. Cached 5 minutes."""
+    if not (token and repo):
+        return {}, "GITHUB_TOKEN / GITHUB_REPO not set"
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        resp = requests.get(url, headers=headers, params={"ref": branch}, timeout=15)
+        if resp.status_code == 404:
+            # Is it the file that's missing, or can this token not see the repo at all?
+            repo_resp = requests.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=15)
+            return {}, ("missing" if repo_resp.status_code == 200 else "no_access")
+        if resp.status_code != 200:
+            return {}, {401: "token rejected (401)", 403: "no permission (403)"}.get(resp.status_code, f"error {resp.status_code}")
+        payload = resp.json()
+        if payload.get("encoding") == "none" or (not payload.get("content") and payload.get("size", 0) > 0):
+            raw = requests.get(url, headers={**headers, "Accept": "application/vnd.github.raw+json"},
+                               params={"ref": branch}, timeout=30)
+            text = raw.content.decode("utf-8-sig") if raw.status_code == 200 else ""
+        else:
+            text = base64.b64decode(payload.get("content") or b"").decode("utf-8-sig")
+        text = text.strip()
+        if not text or text in ("[]", "null"):
+            return {}, "ok"
+        data = json.loads(text)
+        return (data if isinstance(data, dict) else {}), "ok"
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        return {}, f"couldn't read ({exc.__class__.__name__})"
+
+
+def zoho_url(module: str, record_id: Any) -> str:
+    rid = str(record_id or "").strip()
+    if not rid.isdigit():
+        return ""
+    base = _secret("ZOHO_CRM_URL", "https://crm.zoho.eu").rstrip("/")
+    org = _secret("ZOHO_ORG").strip("/")
+    return f"{base}/crm/{org}/tab/{module}/{rid}" if org else f"{base}/crm/tab/{module}/{rid}"
+
+
+def parse_when(value: Any) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d.replace(tzinfo=UK) if d.tzinfo is None else d.astimezone(UK)
+
+
+def is_email(rec: Dict[str, Any]) -> bool:
+    """A real email (sent from Zoho or as a draft), not a call outcome or a 'handled, no email' tick."""
+    status = str(rec.get("status") or "")
+    if status.startswith("Called"):
+        return False
+    return bool(rec.get("to")) or rec.get("via") == "zoho"
+
+
+def how_sent(rec: Dict[str, Any]) -> str:
+    return "Sent from Zoho" if rec.get("via") == "zoho" else "Email draft / marked sent"
+
+
+def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    zoho_leads = logs.get("pe_zoho", {})
+
+    # Prospect Engine: new leads created in Zoho
+    for cn, r in zoho_leads.items():
+        if not isinstance(r, dict) or r.get("status") != "created":
+            continue
+        rows.append({"When": parse_when(r.get("at")), "App": "Prospect Engine", "Activity": "Added to Zoho",
+                     "Firm": r.get("firm") or cn, "Contact": "", "Email": "", "Detail": "New lead created",
+                     "By": r.get("by") or "", "How": "Zoho", "Zoho": zoho_url("Leads", r.get("id"))})
+
+    # Prospect Engine: pitches emailed
+    for cn, r in logs.get("pe_sent", {}).items():
+        if not isinstance(r, dict) or not is_email(r):
+            continue
+        z = zoho_leads.get(cn) or {}
+        link = zoho_url("Accounts" if z.get("status") == "customer" else "Leads", z.get("id"))
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Prospect Engine", "Activity": "Emailed",
+                     "Firm": r.get("company_name") or cn, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
+                     "Detail": r.get("subject") or r.get("vertical") or "", "By": r.get("sent_by") or "",
+                     "How": how_sent(r), "Zoho": link})
+
+    # Lead Revival: keyed by the Zoho lead id
+    for key, r in logs.get("lr_sent", {}).items():
+        if not isinstance(r, dict) or not is_email(r):
+            continue
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Lead Revival", "Activity": "Emailed",
+                     "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
+                     "Detail": r.get("subject") or "", "By": r.get("sent_by") or "", "How": how_sent(r),
+                     "Zoho": zoho_url("Leads", key)})
+
+    # Customer Growth: upsell emails, keyed by the Zoho account id
+    for key, r in logs.get("cg_sent", {}).items():
+        if not isinstance(r, dict) or not (r.get("to") or r.get("via") == "zoho"):
+            continue
+        offers = ", ".join(r.get("offers") or [])
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Upsell email",
+                     "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
+                     "Detail": (r.get("subject") or "") + (f" · {offers}" if offers else ""), "By": r.get("sent_by") or "",
+                     "How": how_sent(r), "Zoho": zoho_url("Accounts", key)})
+
+    # Customer Growth: monthly campaigns, keyed "m01|contact id"
+    for key, r in logs.get("cg_camp", {}).items():
+        if not isinstance(r, dict):
+            continue
+        cid = str(r.get("campaign") or key.split("|")[0])
+        name = CAMPAIGN_NAMES.get(cid, cid)
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "Customer Growth", "Activity": "Campaign email",
+                     "Firm": r.get("account") or "", "Contact": r.get("contact") or "", "Email": r.get("to") or "",
+                     "Detail": f"Campaign {cid[1:]}: {name}", "By": r.get("sent_by") or "", "How": "Sent from Zoho",
+                     "Zoho": zoho_url("Accounts", r.get("account_id"))})
+
+    # MY PA: free 7-day trial emails, keyed by the Zoho lead id
+    for key, r in logs.get("mp_sent", {}).items():
+        if not isinstance(r, dict) or not is_email(r):
+            continue
+        rows.append({"When": parse_when(r.get("sent_at")), "App": "MY PA", "Activity": "Trial offered",
+                     "Firm": r.get("company_name") or key, "Contact": r.get("contact") or "", "Email": r.get("to") or "",
+                     "Detail": r.get("subject") or "", "By": r.get("sent_by") or "", "How": how_sent(r),
+                     "Zoho": zoho_url("Leads", key)})
+
+    cols = ["When", "App", "Activity", "Firm", "Contact", "Email", "Detail", "By", "How", "Zoho"]
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.sort_values("When", ascending=False, na_position="last").reset_index(drop=True)
+    return df
+
+
+# ==========================================
+# Load
+# ==========================================
+hero_slot = st.empty()
+branch = _secret("GITHUB_BRANCH", "main")
+sources = source_list()
+logs: Dict[str, Dict[str, Any]] = {}
+status: Dict[str, str] = {}
+with st.spinner("Reading the apps' logs…"):
+    for s in sources:
+        logs[s["key"]], status[s["key"]] = fetch_log(s["repo"], s["path"], branch, s["tok"])
+events = build_events(logs)
+
+now = datetime.now(UK)
+today = now.date()
+
+
+def on_day(d: Optional[datetime], day: date) -> bool:
+    return bool(d) and d.date() == day
+
+
+def count(app: str, activities: List[str], day: Optional[date] = None) -> int:
+    if events.empty:
+        return 0
+    m = (events["App"] == app) & (events["Activity"].isin(activities))
+    if day:
+        m &= events["When"].apply(lambda d: on_day(d, day))
+    return int(m.sum())
+
+
+EMAIL_ACTS = ["Emailed", "Upsell email", "Campaign email", "Trial offered"]
+
+# ---------------- Sidebar ----------------
+with st.sidebar:
+    render_html(f'<div class="pe-brand"><div class="pe-logo">{ICON_CHART}</div>'
+                f'<div><div class="n">{APP_NAME}</div><div class="s">{APP_TAGLINE}</div></div></div>')
+    render_html('<div class="pe-side-h">Data sources</div>')
+    rows_html = []
+    for s in sources:
+        stt = status[s["key"]]
+        n = len(logs[s["key"]])
+        if stt == "ok":
+            badge = f'<span class="st ok">{n:,} records</span>'
+        elif stt == "missing":
+            badge = '<span class="st idle">Nothing yet</span>'
+        elif stt == "no_access":
+            badge = '<span class="st off">Can\'t see repo</span>'
+        else:
+            badge = f'<span class="st off">{esc(stt)}</span>'
+        rows_html.append(f'<div class="pe-status" title="{esc(s["repo"])}/{esc(s["path"])}"><span>{esc(s["label"])}'
+                         f'<br><span style="font-size:.68rem;color:var(--faint)">{esc(s["repo"] or "no repo set")} · '
+                         f'{esc(s["path"])}</span></span>{badge}</div>')
+    render_html("".join(rows_html))
+    blocked = [s for s in sources if status[s["key"]] == "no_access"]
+    if blocked:
+        apps_b = sorted({s["app"] for s in blocked})
+        st.caption("⚠️ The token can't see the repo for " + " and ".join(apps_b) + ". Either add that app's repo with "
+                   + ", ".join({"Prospect Engine": "PE_GITHUB_REPO", "Lead Revival": "LR_GITHUB_REPO",
+                                "Customer Growth": "CG_GITHUB_REPO"}[a] for a in apps_b)
+                   + " (and its token with the matching _GITHUB_TOKEN), or give this token access to that repo.")
+    errors = [s for s in sources if status[s["key"]] not in ("ok", "missing", "no_access")]
+    if errors:
+        st.caption("⚠️ Check the GitHub token for: " + ", ".join(sorted({s['repo'] or '(no repo)' for s in errors})))
+    if any(status[s["key"]] == "missing" for s in sources):
+        st.caption("'Nothing yet': the repo is fine but that app hasn't saved that file there yet. Check the app has"
+                   " GITHUB_TOKEN and GITHUB_REPO in its own Secrets, and that it's the same repo shown here.")
+    st.caption(f"Updated {now.strftime('%H:%M')}. Refreshes every 5 minutes.")
+    if st.button("↻ Refresh now", **FULL_WIDTH):
+        _fetch_log.clear()
+        st.rerun()
+    if not _secret("ZOHO_ORG"):
+        st.caption("💡 Add ZOHO_ORG to Secrets (the bit after /crm/ in your Zoho address, e.g. org20123456) so Zoho links"
+                   " always open in the right organisation.")
+    st.write("")
+    if st.button("Log out", **FULL_WIDTH):
+        st.session_state.clear()
+        st.rerun()
+
+# ---------------- Hero ----------------
+emails_today = int((events["Activity"].isin(EMAIL_ACTS) & events["When"].apply(lambda d: on_day(d, today))).sum()) if not events.empty else 0
+week_start = today - timedelta(days=today.weekday())
+emails_week = int((events["Activity"].isin(EMAIL_ACTS) & events["When"].apply(lambda d: bool(d) and d.date() >= week_start)).sum()) if not events.empty else 0
+emails_all = int(events["Activity"].isin(EMAIL_ACTS).sum()) if not events.empty else 0
+pills = [(emails_today, "Emails today", "active"), (emails_week, "This week", ""), (emails_all, "All time", "")]
+render_html(
+    '<div class="pe-hero"><div>'
+    f'<div class="pe-eyebrow"><span class="dot"></span>Live from all four apps · {esc(now.strftime("%A %d %B"))}</div>'
+    '<div class="pe-title">Lead <span>overview</span></div>'
+    '<div class="pe-sub">Every new lead and email from Prospect Engine, Lead Revival, Customer Growth and MY PA, in one place.'
+    ' Click any row\'s Zoho link to open the record.</div></div>'
+    '<div class="pe-stepper">'
+    + '<div class="pe-step-sep"></div>'.join(f'<div class="pe-step {c}"><span class="num">{v:,}</span>{esc(t)}</div>' for v, t, c in pills)
+    + "</div></div>",
+    target=hero_slot,
+)
+
+# ---------------- KPI tiles ----------------
+pe_added_total, pe_added_today = count("Prospect Engine", ["Added to Zoho"]), count("Prospect Engine", ["Added to Zoho"], today)
+pe_em_total, pe_em_today = count("Prospect Engine", ["Emailed"]), count("Prospect Engine", ["Emailed"], today)
+lr_total, lr_today = count("Lead Revival", ["Emailed"]), count("Lead Revival", ["Emailed"], today)
+cg_up, cg_camp = count("Customer Growth", ["Upsell email"]), count("Customer Growth", ["Campaign email"])
+cg_total, cg_today = cg_up + cg_camp, count("Customer Growth", ["Upsell email", "Campaign email"], today)
+mp_total, mp_today = count("MY PA", ["Trial offered"]), count("MY PA", ["Trial offered"], today)
+
+
+def kpi(app: str, label: str, today_v: int, total_v: int, foot: str, single: bool = False) -> str:
+    body = (f'<div class="row"><div><div class="v big">{today_v:,}</div><div class="k">Today</div></div>'
+            f'<div><div class="v">{total_v:,}</div><div class="k">Total</div></div></div>')
+    return (f'<div class="lo-kpi" style="--c:{APPS[app]}"><div class="app"><i></i>{esc(app)}</div>'
+            f'<div class="l">{esc(label)}</div>{body}<div class="foot">{esc(foot)}</div></div>')
+
+
+render_html(
+    '<div class="lo-kpis">'
+    + kpi("Prospect Engine", "New prospects added to Zoho", pe_added_today, pe_added_total,
+          "New leads only. Firms already in Zoho aren't counted.")
+    + kpi("Prospect Engine", "New prospects emailed", pe_em_today, pe_em_total, "Pitch emails to new firms")
+    + kpi("Lead Revival", "Lead revivals emailed", lr_today, lr_total, "Old Zoho leads re-contacted")
+    + kpi("Customer Growth", "Customer growth emails", cg_today, cg_total, f"{cg_up:,} upsell · {cg_camp:,} campaign")
+    + kpi("MY PA", "Free trials offered", mp_today, mp_total, "MY PA Connect 7-day trial emails")
+    + "</div>"
+)
+
+if events.empty:
+    with st.container(key="card-empty"):
+        render_html(
+            f'<div class="pe-empty"><div style="color:var(--accent-2);display:inline-block;padding:18px;border-radius:20px;'
+            f'background:rgba(56,214,245,.1);border:1px solid rgba(56,214,245,.3)">{ICON_CHART}</div>'
+            '<div class="t">No activity found yet</div>'
+            '<div class="s">The dashboard fills up as soon as the apps save their first emails to GitHub.</div>'
+            "<ol><li>Add GITHUB_TOKEN and GITHUB_REPO to this app's Secrets</li>"
+            "<li>Use the same repos the apps save to</li><li>Hit Refresh now in the sidebar</li></ol></div>")
+    st.stop()
+
+# ---------------- Chart: emails per day ----------------
+with st.container(key="card-chart"):
+    section_header("01", "Emails per day", "Last 14 days, by app. Hover a bar for the numbers.")
+    start = today - timedelta(days=13)
+    em = events[events["Activity"].isin(EMAIL_ACTS) & events["When"].notna()].copy()
+    em["Day"] = em["When"].apply(lambda d: d.date())
+    em = em[em["Day"] >= start]
+    grid = pd.MultiIndex.from_product([[start + timedelta(days=i) for i in range(14)], list(APPS)], names=["Day", "App"])
+    daily = em.groupby(["Day", "App"]).size().reindex(grid, fill_value=0).reset_index(name="Emails")
+    daily["Date"] = pd.to_datetime(daily["Day"])
+    daily["Label"] = daily["Date"].dt.strftime("%a %d %b")
+    chart = (
+        alt.Chart(daily)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, stroke="#111827", strokeWidth=2)
+        .encode(
+            x=alt.X("Label:N", sort=list(daily.drop_duplicates("Label")["Label"]), title=None,
+                    axis=alt.Axis(labelAngle=0, labelColor="#8C98B0", labelFontSize=11, domainColor="#2A3550", ticks=False,
+                                  labelExpr="split(datum.label, ' ')[0] + ' ' + split(datum.label, ' ')[1]")),
+            y=alt.Y("Emails:Q", title=None, stack="zero",
+                    axis=alt.Axis(labelColor="#8C98B0", gridColor="#1F2A40", domain=False, ticks=False, tickMinStep=1)),
+            color=alt.Color("App:N", scale=alt.Scale(domain=list(APPS), range=list(APPS.values())),
+                            legend=alt.Legend(orient="top", title=None, labelColor="#E7EAF3", symbolType="square")),
+            order=alt.Order("App:N"),
+            tooltip=[alt.Tooltip("Label:N", title="Day"), alt.Tooltip("App:N"), alt.Tooltip("Emails:Q")],
+        )
+        .properties(height=240, background="transparent")
+        .configure_view(strokeWidth=0)
+        .configure(font="Inter")
+    )
+    try:
+        st.altair_chart(chart, width="stretch")
+    except Exception:
+        st.altair_chart(chart, use_container_width=True)
+
+# ---------------- Table ----------------
+with st.container(key="card-table"):
+    section_header("02", "All activity", "Newest first. Filter, search, then open any record in Zoho.")
+    f1, f2, f3, f4 = st.columns([1, 1.3, 1.3, 1.4])
+    with f1:
+        period = st.selectbox("Period", ["Today", "Last 7 days", "Last 30 days", "This month", "All time"], index=4)
+    with f2:
+        pick_apps = st.multiselect("App", list(APPS), default=[], placeholder="All apps")
+    with f3:
+        acts = sorted(events["Activity"].unique())
+        pick_acts = st.multiselect("Activity", acts, default=[], placeholder="All activity")
+    with f4:
+        q = st.text_input("Search", placeholder="Firm, contact, email or subject").strip().lower()
+
+    view = events.copy()
+    day_of = view["When"].apply(lambda d: d.date() if d else None)
+    if period == "Today":
+        view = view[day_of == today]
+    elif period == "Last 7 days":
+        view = view[day_of.apply(lambda d: bool(d) and d >= today - timedelta(days=6))]
+    elif period == "Last 30 days":
+        view = view[day_of.apply(lambda d: bool(d) and d >= today - timedelta(days=29))]
+    elif period == "This month":
+        view = view[day_of.apply(lambda d: bool(d) and d.year == today.year and d.month == today.month)]
+    if pick_apps:
+        view = view[view["App"].isin(pick_apps)]
+    if pick_acts:
+        view = view[view["Activity"].isin(pick_acts)]
+    if q:
+        hay = (view["Firm"] + " " + view["Contact"] + " " + view["Email"] + " " + view["Detail"] + " " + view["By"]).str.lower()
+        view = view[hay.str.contains(q, regex=False)]
+
+    st.caption(f"Showing {len(view):,} of {len(events):,} records.")
+    show = view.copy()
+    show["When"] = show["When"].apply(
+        lambda d: "" if not d else d.strftime("Today %H:%M") if d.date() == today
+        else d.strftime("%a %d %b %H:%M") if d.year == today.year else d.strftime("%d %b %Y"))
+    show["App"] = show["App"].map({"Prospect Engine": "🔵 Prospect Engine", "Lead Revival": "🟠 Lead Revival",
+                                   "Customer Growth": "🟢 Customer Growth", "MY PA": "🟡 MY PA"})
+    table_kwargs = dict(
+        hide_index=True, height=min(38 + 35 * max(len(show), 1), 620),
+        column_order=["When", "App", "Activity", "Firm", "Contact", "Email", "Detail", "By", "How", "Zoho"],
+        column_config={
+            "When": st.column_config.TextColumn("When", width=128),
+            "App": st.column_config.TextColumn("App", width=165),
+            "Activity": st.column_config.TextColumn("Activity", width=125),
+            "Firm": st.column_config.TextColumn("Firm / customer", width="medium"),
+            "Contact": st.column_config.TextColumn("Contact", width="small"),
+            "Email": st.column_config.TextColumn("Email", width="medium"),
+            "Detail": st.column_config.TextColumn("Subject / detail", width="large"),
+            "By": st.column_config.TextColumn("By", width="small"),
+            "How": st.column_config.TextColumn("How", width=150),
+            "Zoho": st.column_config.LinkColumn("Zoho", width="small", display_text="Open ↗"),
+        },
+    )
+    try:
+        st.dataframe(show, width="stretch", **table_kwargs)
+    except Exception:
+        st.dataframe(show, use_container_width=True, **table_kwargs)
+    d1, _ = columns([1, 3])
+    with d1:
+        export = view.copy()
+        export["When"] = export["When"].apply(lambda d: d.strftime("%Y-%m-%d %H:%M") if d else "")
+        st.download_button("⬇  Download these rows (.csv)", data=export.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"lead_overview_{today.isoformat()}.csv", mime="text/csv", **FULL_WIDTH)
+
+# ==========================================
+# SETUP (Streamlit Secrets)
+#   APP_PASSWORD   = "choose-a-password"
+#   GITHUB_TOKEN   = "github_pat_..."     # read access to the repo(s) the apps save to
+#   GITHUB_REPO    = "sammyatt2010-hub/prospect-engine-data"
+# Optional:
+#   ZOHO_ORG       = "org20123456"        # from your Zoho address: crm.zoho.eu/crm/<this>/...
+#   PE_GITHUB_REPO / LR_GITHUB_REPO / CG_GITHUB_REPO      # only if an app saves to a different repo
+#   PE_GITHUB_TOKEN / LR_GITHUB_TOKEN / CG_GITHUB_TOKEN   # that app's own token, if GITHUB_TOKEN can't see its repo
+#   GITHUB_LOG_PATH, GITHUB_ZOHO_LEADS_PATH, GITHUB_CRM_LOG_PATH, GITHUB_CG_LOG_PATH, GITHUB_CG_CAMPAIGN_PATH
+#                                          # only if you changed a file name in one of the apps
+# ==========================================

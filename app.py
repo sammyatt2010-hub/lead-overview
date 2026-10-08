@@ -879,6 +879,57 @@ def load_engagement(sends: List[Dict[str, Any]], force: bool = False, progress=N
     return {k: cache[k][1] for k in need if k in cache}, err
 
 
+# ---- Saved engagement: the last Zoho check is kept in GitHub, so the page never has to ask Zoho on load ----
+def _eng_store() -> Tuple[str, str, str]:
+    repo = _secret("ENG_GITHUB_REPO", _secret("GITHUB_REPO"))
+    token = _clean_token(_secret("ENG_GITHUB_TOKEN") or _secret("GITHUB_TOKEN"))
+    return repo, _secret("GITHUB_ENGAGEMENT_PATH", "engagement_cache.json"), token
+
+
+def load_saved_engagement() -> Tuple[Dict[str, Any], str]:
+    """(saved data, status) from GitHub. Data: {"checked_at", "checked_by", "records": {"Leads/123": {"t", "emails"}}}."""
+    if "eng_saved" in st.session_state:  # Just saved in this visit: use it straight away
+        return st.session_state["eng_saved"], "ok"
+    repo, path, token = _eng_store()
+    return _fetch_log(repo, path, _secret("GITHUB_BRANCH", "main"), token)
+
+
+def _slim(e: Dict[str, Any]) -> Dict[str, Any]:
+    """Only what the dashboard needs from each Zoho email, to keep the saved file small."""
+    return {"subject": e.get("subject") or "", "time": e.get("time") or e.get("sent_time") or "",
+            "to": [{"email": str(x.get("email") or "")} for x in (e.get("to") or []) if isinstance(x, dict)],
+            "from": {"email": str(((e.get("from") or {}) if isinstance(e.get("from"), dict) else {}).get("email") or "")},
+            "status": [x for x in (e.get("status") or []) if isinstance(x, dict)]}
+
+
+def save_engagement(data: Dict[str, Any]) -> Optional[str]:
+    """Writes the saved check to GitHub. Returns None, or a plain-English error."""
+    repo, path, token = _eng_store()
+    if not (repo and token):
+        return "GITHUB_REPO / GITHUB_TOKEN aren't set, so the check can't be saved."
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    branch = _secret("GITHUB_BRANCH", "main")
+    content = base64.b64encode(json.dumps(data, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    try:
+        for _attempt in range(3):
+            cur = requests.get(url, headers=headers, params={"ref": branch}, timeout=15)
+            body = {"message": f"Lead Overview: engagement checked ({data.get('checked_at', '')[:16]})",
+                    "content": content, "branch": branch}
+            if cur.status_code == 200:
+                body["sha"] = cur.json().get("sha")
+            resp = requests.put(url, headers=headers, json=body, timeout=30)
+            if resp.status_code in (200, 201):
+                return None
+            if resp.status_code not in (409, 422):  # 409/422: someone saved at the same moment; try again
+                break
+    except requests.exceptions.RequestException as exc:
+        return f"Couldn't reach GitHub ({exc.__class__.__name__})."
+    return {401: "GitHub rejected the token (401).",
+            403: "The GitHub token can only read. Give it Contents: Read and write on the repo (or add ENG_GITHUB_TOKEN)",
+            404: "GitHub can't see that repo with this token (404)."}.get(resp.status_code, f"GitHub error {resp.status_code}.")
+
+
 def _norm(t: Any) -> str:
     return " ".join(str(t or "").lower().split())
 
@@ -1042,6 +1093,7 @@ with st.sidebar:
     st.caption(f"Updated {now.strftime('%H:%M')}. Refreshes every 5 minutes.")
     if st.button("↻ Refresh now", **FULL_WIDTH):
         _fetch_log.clear()
+        st.session_state.pop("eng_saved", None)
         st.rerun()
     if not _secret("ZOHO_ORG"):
         st.caption("💡 Add ZOHO_ORG to Secrets (the bit after /crm/ in your Zoho address, e.g. org20123456) so Zoho links"
@@ -1228,30 +1280,62 @@ with st.container(key="card-eng"):
         eng_period = e1.radio("Period", ["Last 7 days", "Last 30 days"], horizontal=True, key="eng_period")
         pick_eng_apps = e2.multiselect("App", list(APPS), default=[], placeholder="All apps", key="eng_apps")
         recheck = e3.button("↻  Check Zoho now", key="eng_recheck", **FULL_WIDTH,
-                            help="Re-reads the latest opens, clicks and bounces from Zoho straight away.")
+                            help="Reads the latest opens, clicks and bounces from Zoho and saves them for everyone."
+                                 " Takes a minute or so.")
         sends = engagement_sends(logs, datetime.now(UK) - timedelta(days=ENG_DAYS))
         capped = len(sends) > ENG_MAX
         sends = sends[:ENG_MAX]
-        bar = st.empty()
+        saved, saved_status = load_saved_engagement()
+        records: Dict[str, Any] = dict(saved.get("records") or {})
+        eng_err: Optional[str] = None
+        if recheck:  # Only ever asks Zoho when the button is clicked
+            bar = st.empty()
 
-        def _prog(frac: float, text: str) -> None:
-            bar.progress(min(frac, 1.0), text=text)
+            def _prog(frac: float, text: str) -> None:
+                bar.progress(min(frac, 1.0), text=text)
 
-        with st.spinner("Reading email tracking from Zoho…"):
-            eng_emails, eng_err = load_engagement(sends, force=recheck, progress=_prog)
-        bar.empty()
+            with st.spinner(f"Checking {len({(x['module'], x['id']) for x in sends}):,} records in Zoho…"):
+                fresh, eng_err = load_engagement(sends, force=True, progress=_prog)
+            bar.empty()
+            if fresh:
+                stamp = time.time()
+                for (m, i), em in fresh.items():
+                    records[f"{m}/{i}"] = {"t": stamp, "emails": [_slim(e) for e in em]}
+                keep = {f"{x['module']}/{x['id']}" for x in sends}  # Drop records older than the 30 days
+                records = {k: v for k, v in records.items() if k in keep}
+                new_saved = {"checked_at": datetime.now(UK).isoformat(timespec="seconds"),
+                             "checked_by": st.session_state.get("eng_who", ""), "records": records}
+                st.session_state["eng_saved"] = new_saved
+                save_err = save_engagement(new_saved)
+                _fetch_log.clear()
+                if save_err:
+                    st.warning(f"Checked, but not saved to GitHub: {save_err}. It shows until you leave the page.")
+                else:
+                    st.success(f"Checked {len(fresh):,} records in Zoho and saved for everyone.")
+                saved = new_saved
         key_problem = bool(eng_err and "KEY: " in eng_err)
         if eng_err:
             (st.error if key_problem else st.warning)(eng_err.replace("KEY: ", ""))
         # Set up or renew this app's own Zoho key; opens by itself when the key is the problem
         with st.expander("🔑  Zoho key: set up or renew", expanded=key_problem):
             render_zoho_connect()
+        eng_emails = {tuple(k.split("/", 1)): v.get("emails") or [] for k, v in records.items()
+                      if isinstance(v, dict) and "/" in k}
         eng_df = build_engagement(sends, eng_emails)
+        checked_at = parse_when(saved.get("checked_at"))
+        unchecked = len({(x["module"], x["id"]) for x in sends} - set(eng_emails))
+        if saved_status not in ("ok", "missing"):
+            st.caption(f"⚠️ Couldn't read the saved check from GitHub ({saved_status}).")
+        if checked_at:
+            st.caption(f"Last checked in Zoho: {_when(checked_at)}"
+                       + (f" · {unchecked:,} newer send{'s' if unchecked != 1 else ''} not checked yet."
+                          " Click Check Zoho now to include them." if unchecked else " · up to date with every send."))
         if not sends:
             st.info("No emails sent from Zoho in the last 30 days yet. Only emails sent with the apps' **Send via Zoho**"
                     " button are tracked; drafts opened in Outlook aren't.")
         elif eng_df.empty:
-            st.info("Nothing read from Zoho yet. Click **Check Zoho now**.")
+            st.info("Not checked yet. Click **Check Zoho now** to read opens, clicks and bounces from Zoho. It takes a"
+                    " minute or so, then it's saved, so the page opens instantly after that.")
         else:
             span = 7 if eng_period == "Last 7 days" else 30
             p_start = today - timedelta(days=span - 1)

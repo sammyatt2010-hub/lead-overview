@@ -727,8 +727,8 @@ def zoho_token(force: bool = False, stt: Optional[Dict[str, Any]] = None) -> str
         except (requests.exceptions.RequestException, ValueError) as exc:
             raise ZohoError(f"Couldn't reach Zoho to sign in ({exc.__class__.__name__}).")
         if "access_token" not in data:
-            raise ZohoError(f"Zoho sign-in failed ({data.get('error', 'unknown error')}). Check ZOHO_CLIENT_ID,"
-                            " ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN in this app's Secrets.")
+            raise ZohoError(f"KEY: Zoho sign-in failed ({data.get('error', 'unknown error')}). Check ZOHO_CLIENT_ID and"
+                            " ZOHO_CLIENT_SECRET match Lead Revival's, then make a fresh key with the setup steps below.")
         stt["token"], stt["exp"] = data["access_token"], time.time() + int(data.get("expires_in", 3600))
         stt["api"] = str(data.get("api_domain") or cr["api"]).rstrip("/")
         return stt["token"]
@@ -782,7 +782,10 @@ def record_emails(module: str, rid: str, stt: Optional[Dict[str, Any]] = None) -
         if resp.status_code >= 400:
             code = str(body.get("code") or "")
             if code == "OAUTH_SCOPE_MISMATCH":
-                raise ZohoError("The Zoho key is missing a permission. Redo the one-off Zoho setup with the scope shown.")
+                raise ZohoError("KEY: This Zoho key can't read email tracking. It's probably the key copied from another"
+                                " app. This app needs its own key: follow the setup steps below.")
+            if code in ("NO_PERMISSION", "INVALID_TOKEN", "AUTHENTICATION_FAILURE"):
+                raise ZohoError(f"KEY: Zoho turned the key down ({code}). Make this app its own key with the setup steps below.")
             if resp.status_code in (400, 404) and code in ("INVALID_DATA", "INVALID_URL_PATTERN", "NO_CONTENT", ""):
                 return out  # Record deleted or merged since the email went out
             raise ZohoError(f"Zoho CRM error ({code or resp.status_code}): {body.get('message', '')}".strip())
@@ -1237,8 +1240,12 @@ with st.container(key="card-eng"):
         with st.spinner("Reading email tracking from Zoho…"):
             eng_emails, eng_err = load_engagement(sends, force=recheck, progress=_prog)
         bar.empty()
+        key_problem = bool(eng_err and "KEY: " in eng_err)
         if eng_err:
-            st.warning(eng_err)
+            (st.error if key_problem else st.warning)(eng_err.replace("KEY: ", ""))
+        # Set up or renew this app's own Zoho key; opens by itself when the key is the problem
+        with st.expander("🔑  Zoho key: set up or renew", expanded=key_problem):
+            render_zoho_connect()
         eng_df = build_engagement(sends, eng_emails)
         if not sends:
             st.info("No emails sent from Zoho in the last 30 days yet. Only emails sent with the apps' **Send via Zoho**"

@@ -5,12 +5,16 @@ Prospect Engine, Lead Revival, Customer Growth and MY PA.
 
 It reads the same JSON logs those apps already save to GitHub, so it never changes Zoho or the logs.
 Secrets: APP_PASSWORD, GITHUB_TOKEN, GITHUB_REPO (see the setup notes at the bottom of this file).
+Optional: ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN for opens, clicks and bounces (read-only).
 """
 import base64
 import hmac
 import html as html_lib
 import inspect
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -56,7 +60,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-chart,.st-key-card-table,.st-key-card-week,.st-key-card-login,.st-key-card-empty{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-chart,.st-key-card-eng,.st-key-card-table,.st-key-card-week,.st-key-card-login,.st-key-card-empty{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
 [data-baseweb="input"]>div,[data-baseweb="base-input"]{background:transparent!important}
@@ -394,8 +398,9 @@ def build_events(logs: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
 # ==========================================
 # Weekly summary (last 7 days): numbers, a one-page PDF and a copy-ready email text
 # ==========================================
-def week_stats(ev: pd.DataFrame, end: date) -> Dict[str, Any]:
-    """Highlights for the 7 days ending `end` (inclusive), compared with the 7 days before. No firm names."""
+def week_stats(ev: pd.DataFrame, end: date, eng: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """Highlights for the 7 days ending `end` (inclusive), compared with the 7 days before. No firm names.
+    `eng` (opens/clicks/bounces from Zoho) adds engagement rates when that week has been checked."""
     start, prev_start = end - timedelta(days=6), end - timedelta(days=13)
     d = ev[ev["When"].notna()].copy()
     d["Day"] = d["When"].apply(lambda x: x.date())
@@ -430,7 +435,21 @@ def week_stats(ev: pd.DataFrame, end: date) -> Dict[str, Any]:
         "sectors": [(k, int(v)) for k, v in sectors.items()],
         "campaigns": [(k, int(v)) for k, v in camps.items()],
         "active_days": sum(1 for x in days if sum(daily[x].values())),
+        "eng": _week_eng(eng, start, end),
     }
+
+
+def _week_eng(eng: Optional[pd.DataFrame], start: date, end: date) -> Optional[Dict[str, Any]]:
+    if eng is None or eng.empty or start < datetime.now(UK).date() - timedelta(days=ENG_DAYS - 1):
+        return None
+    days = eng["Sent"].apply(lambda x: x.date())
+    r = eng_rates(eng[(days >= start) & (days <= end)])
+    return r if r["sent"] else None
+
+
+def eng_sentence(r: Dict[str, Any]) -> str:
+    return (f"Of {r['sent']:,} emails sent from Zoho, {pct(r['open_rate'])} were opened and {pct(r['click_rate'])} clicked;"
+            f" {r['bounced']:,} bounced ({pct(r['bounce_rate'])}).")
 
 
 def _change(now_v: int, before: int) -> str:
@@ -452,6 +471,8 @@ def weekly_text(ws: Dict[str, Any]) -> str:
         lines.append(f"- {round(ws['via_zoho'] / ws['emails'] * 100)}% sent straight from Zoho, so every one is logged on the record")
     if ws["busiest"]:
         lines.append(f"- Busiest day: {ws['busiest'].strftime('%A')} with {ws['busiest_n']:,} emails")
+    if ws.get("eng"):
+        lines.append("- " + eng_sentence(ws["eng"]))
     lines += ["", "By app (this week / previous week / all time):"]
     for a in ws["per_app"]:
         lines.append(f"- {a['app']}: {a['week']:,} / {a['prev']:,} / {a['all']:,}")
@@ -621,6 +642,8 @@ def weekly_pdf(ws: Dict[str, Any]) -> bytes:
         bullets.append("Top sectors pitched: " + ", ".join(f"{k} ({v})" for k, v in ws["sectors"]) + ".")
     if ws["campaigns"]:
         bullets.append("Customer campaigns sent: " + ", ".join(f"{k} ({v})" for k, v in ws["campaigns"]) + ".")
+    if ws.get("eng"):
+        bullets.append(eng_sentence(ws["eng"]))
     if ws["trials"]:
         bullets.append(f"{ws['trials']:,} businesses offered a free 1-week MY PA Connect trial.")
     bullets.append(f"All time: {ws['emails_all']:,} emails sent and {ws['leads_all']:,} new leads added to Zoho.")
@@ -645,6 +668,308 @@ def weekly_pdf(ws: Dict[str, Any]) -> bytes:
                      " sent and new Zoho leads; no individual companies are named."))
     out = pdf.output()
     return bytes(out) if not isinstance(out, str) else out.encode("latin-1", "replace")
+
+
+# ==========================================
+# Engagement: opens, clicks and bounces from Zoho's own email tracking (read only)
+# ==========================================
+ZOHO_SCOPE = ("ZohoCRM.modules.leads.READ,ZohoCRM.modules.contacts.READ,ZohoCRM.modules.accounts.READ,"
+              "ZohoCRM.modules.emails.READ")
+ENG_DAYS = 30    # sends from the last 30 days are checked
+ENG_MAX = 1500   # newest sends checked per refresh, to go easy on Zoho's daily API allowance
+OPEN_COL, CLICK_COL = "#9085e9", "#d55181"  # validated pair on the dark surface; not used for any app
+# Brand names match Customer Growth's brands; anything else shows its email domain
+BRAND_DOMAINS = (("syplus", "SY Plus"), ("southwales", "South Wales Comms"), ("swcomms", "South Wales Comms"),
+                 ("sycomms", "SY Communications"), ("novalink", "Novalink"), ("mypaglobal", "MY PA"))
+
+
+class ZohoError(RuntimeError):
+    pass
+
+
+@st.cache_resource
+def _zoho_state_for(key: str) -> Dict[str, Any]:
+    """Shared by everyone using the app: the sign-in and each record's emails (so Zoho is asked as little as possible).
+    Keyed on the Zoho secrets, so changing them in Secrets starts afresh."""
+    return {"token": "", "exp": 0.0, "api": "", "lock": threading.Lock(), "emails": {}}
+
+
+_ZKEY = str(hash((_secret("ZOHO_CLIENT_ID"), _secret("ZOHO_REFRESH_TOKEN"))))
+
+
+def _zoho_state() -> Dict[str, Any]:
+    return _zoho_state_for(_ZKEY)
+
+
+def zoho_configured() -> bool:
+    return all(_secret(k) for k in ("ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN"))
+
+
+def _accounts_url() -> str:
+    return _secret("ZOHO_ACCOUNTS_URL", "https://accounts.zoho.eu").rstrip("/")
+
+
+def zoho_token(force: bool = False, stt: Optional[Dict[str, Any]] = None) -> str:
+    stt = stt or _zoho_state()
+    with stt["lock"]:
+        if stt["token"] and not force and stt["exp"] > time.time() + 60:
+            return stt["token"]
+        try:
+            if not stt.get("creds"):  # Read on the page's own thread first; the background checks reuse it
+                stt["creds"] = {"url": _accounts_url(), "refresh_token": _secret("ZOHO_REFRESH_TOKEN"),
+                                "client_id": _secret("ZOHO_CLIENT_ID"), "client_secret": _secret("ZOHO_CLIENT_SECRET"),
+                                "api": _secret("ZOHO_API_DOMAIN", "https://www.zohoapis.eu").rstrip("/")}
+            cr = stt["creds"]
+            resp = requests.post(f"{cr['url']}/oauth/v2/token", timeout=12, params={
+                "refresh_token": cr["refresh_token"], "client_id": cr["client_id"],
+                "client_secret": cr["client_secret"], "grant_type": "refresh_token"})
+            data = resp.json()
+        except (requests.exceptions.RequestException, ValueError) as exc:
+            raise ZohoError(f"Couldn't reach Zoho to sign in ({exc.__class__.__name__}).")
+        if "access_token" not in data:
+            raise ZohoError(f"Zoho sign-in failed ({data.get('error', 'unknown error')}). Check ZOHO_CLIENT_ID,"
+                            " ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN in this app's Secrets.")
+        stt["token"], stt["exp"] = data["access_token"], time.time() + int(data.get("expires_in", 3600))
+        stt["api"] = str(data.get("api_domain") or cr["api"]).rstrip("/")
+        return stt["token"]
+
+
+def zoho_exchange_code(code: str) -> Dict[str, str]:
+    """One-off setup: swaps a Self Client code for a refresh token. {'refresh_token': ...} or {'error': ...}."""
+    try:
+        resp = requests.post(f"{_accounts_url()}/oauth/v2/token", timeout=15, data={
+            "grant_type": "authorization_code", "client_id": _secret("ZOHO_CLIENT_ID"),
+            "client_secret": _secret("ZOHO_CLIENT_SECRET"), "code": code.strip()})
+        data = resp.json()
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        return {"error": f"Couldn't reach Zoho ({exc.__class__.__name__}). Try again in a moment."}
+    if data.get("refresh_token"):
+        return {"refresh_token": data["refresh_token"]}
+    err = str(data.get("error") or f"HTTP {resp.status_code}")
+    hint = {"invalid_code": "The code expired or was already used. Generate a fresh one and paste it straight in.",
+            "invalid_client": "Zoho doesn't recognise ZOHO_CLIENT_ID. Copy it again from the Self Client.",
+            "invalid_client_secret": "ZOHO_CLIENT_SECRET doesn't match the client ID. Copy it again."}.get(
+        err, "Generate a fresh code and try again.")
+    return {"error": f"Zoho said: {err}. {hint}"}
+
+
+def record_emails(module: str, rid: str, stt: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Emails Zoho holds for one record (for an Account: those sent to any of its contacts).
+    `stt` is passed in by the background checks, which can't reach the page's caches themselves."""
+    stt = stt or _zoho_state()
+    params: Dict[str, Any] = {"type": "all_contacts_sent_crm_emails"} if module == "Accounts" else {}
+    out: List[Dict[str, Any]] = []
+    for _page in range(5):  # 10 emails a page; 50 is plenty for one record
+        resp = None
+        for attempt in range(3):
+            api = stt["api"] or (stt.get("creds") or {}).get("api") or "https://www.zohoapis.eu"
+            try:
+                resp = requests.get(f"{api}/crm/v8/{module}/{rid}/Emails", params=params, timeout=20,
+                                    headers={"Authorization": f"Zoho-oauthtoken {zoho_token(attempt > 0 and resp is not None and resp.status_code == 401, stt)}"})
+            except requests.exceptions.RequestException as exc:
+                raise ZohoError(f"Couldn't reach Zoho CRM ({exc.__class__.__name__}).")
+            if resp.status_code == 429:  # Too many at once: wait and try again
+                time.sleep(2 + attempt * 2)
+                continue
+            if resp.status_code != 401:
+                break
+        if resp is None or resp.status_code == 204:
+            break
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        if resp.status_code >= 400:
+            code = str(body.get("code") or "")
+            if code == "OAUTH_SCOPE_MISMATCH":
+                raise ZohoError("The Zoho key is missing a permission. Redo the one-off Zoho setup with the scope shown.")
+            if resp.status_code in (400, 404) and code in ("INVALID_DATA", "INVALID_URL_PATTERN", "NO_CONTENT", ""):
+                return out  # Record deleted or merged since the email went out
+            raise ZohoError(f"Zoho CRM error ({code or resp.status_code}): {body.get('message', '')}".strip())
+        out += body.get("Emails") or body.get("email_related_list") or []
+        info = body.get("info") or {}
+        if not info.get("more_records") or not info.get("next_index"):
+            break
+        params = {**params, "index": info["next_index"]}
+    return out
+
+
+def engagement_sends(logs: Dict[str, Dict[str, Any]], since: datetime) -> List[Dict[str, Any]]:
+    """Every email sent FROM ZOHO (so it's tracked) since `since`, with the Zoho record it was sent on."""
+    out: List[Dict[str, Any]] = []
+
+    def add(app: str, module: str, rid: Any, r: Dict[str, Any], firm: str) -> None:
+        when = parse_when(r.get("sent_at"))
+        rid = str(rid or "").strip()
+        if not when or when < since or not rid.isdigit():
+            return
+        out.append({"app": app, "module": module, "id": rid, "sent": when, "firm": firm, "contact": r.get("contact") or "",
+                    "to": str(r.get("to") or "").strip().lower(), "subject": r.get("subject") or "",
+                    "brand": r.get("brand") or "", "from": str(r.get("from_address") or "").lower()})
+
+    zl = logs.get("pe_zoho", {})
+    for cn, r in logs.get("pe_sent", {}).items():
+        if isinstance(r, dict) and r.get("via") == "zoho":
+            z = zl.get(cn) or {}
+            if z.get("status") != "customer":
+                add("Prospect Engine", "Leads", z.get("id"), r, r.get("company_name") or cn)
+    for key, r in logs.get("lr_sent", {}).items():
+        if isinstance(r, dict) and r.get("via") == "zoho":
+            add("Lead Revival", "Leads", key, r, r.get("company_name") or key)
+    for key, r in logs.get("mp_sent", {}).items():
+        if isinstance(r, dict) and r.get("via") == "zoho":
+            add("MY PA", "Leads", key, r, r.get("company_name") or key)
+    for key, r in logs.get("cg_sent", {}).items():
+        if isinstance(r, dict) and r.get("via") == "zoho":
+            add("Customer Growth", "Accounts", key, r, r.get("company_name") or key)
+    for key, r in logs.get("cg_camp", {}).items():
+        if isinstance(r, dict) and "|" in str(key):
+            add("Customer Growth", "Contacts", str(key).split("|", 1)[1], r, r.get("account") or "")
+    out.sort(key=lambda x: x["sent"], reverse=True)
+    return out
+
+
+def load_engagement(sends: List[Dict[str, Any]], force: bool = False, progress=None) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Optional[str]]:
+    """Each record's emails from Zoho. Recent sends are re-checked every 20 minutes, older ones every 3 hours."""
+    stt = _zoho_state()
+    cache = stt["emails"]
+    now_t = time.time()
+    need: Dict[Tuple[str, str], float] = {}
+    for s in sends:
+        age_h = (datetime.now(UK) - s["sent"]).total_seconds() / 3600
+        ttl = 1200 if age_h < 72 else 10800
+        k = (s["module"], s["id"])
+        need[k] = min(need.get(k, ttl), ttl)
+    todo = [k for k, ttl in need.items() if force or k not in cache or now_t - cache[k][0] > ttl]
+    err: Optional[str] = None
+    if todo:
+        try:
+            zoho_token()
+            first = todo[0]  # One on its own first: a permission problem then stops everything straight away
+            cache[first] = (time.time(), record_emails(*first, stt=stt))
+        except ZohoError as exc:
+            return {k: cache[k][1] for k in need if k in cache}, str(exc)
+        stop = threading.Event()
+        failures: List[str] = []
+
+        def one(k: Tuple[str, str]) -> Tuple[Tuple[str, str], Optional[List[Dict[str, Any]]], Optional[str]]:
+            if stop.is_set():
+                return k, None, None
+            try:
+                return k, record_emails(*k, stt=stt), None
+            except ZohoError as exc:
+                return k, None, str(exc)
+
+        rest = todo[1:]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for n, (k, emails, e) in enumerate(pool.map(one, rest), 1):
+                if emails is not None:
+                    cache[k] = (time.time(), emails)
+                elif e:
+                    failures.append(e)
+                    if len(failures) >= 10:
+                        stop.set()
+                if progress and (n % 10 == 0 or n == len(rest)):
+                    progress(n / max(len(rest), 1), f"Checking Zoho · {n:,} of {len(rest):,} records")
+        if failures:
+            err = f"{len(failures):,} records couldn't be checked. Last error: {failures[-1]}"
+    return {k: cache[k][1] for k in need if k in cache}, err
+
+
+def _norm(t: Any) -> str:
+    return " ".join(str(t or "").lower().split())
+
+
+def match_email(send: Dict[str, Any], emails: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The Zoho email that is this send: same recipient, then same subject, then nearest in time (within 3 days)."""
+    to = send["to"]
+    pool = [e for e in emails if any(str((x or {}).get("email", "")).lower() == to for x in (e.get("to") or []))] if to else []
+    if not pool and send["module"] != "Accounts":
+        pool = emails
+    subj = _norm(send["subject"])
+    best, best_score = None, None
+    for e in pool:
+        et = parse_when(e.get("time") or e.get("sent_time"))
+        gap = abs((et - send["sent"]).total_seconds()) if et else 10 ** 9
+        same = bool(subj) and _norm(e.get("subject")) == subj
+        if not same and gap > 3 * 86400:
+            continue
+        score = (0 if same else 1, gap)
+        if best_score is None or score < best_score:
+            best, best_score = e, score
+    return best
+
+
+def email_signals(e: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    out = {"Opened": False, "Opens": 0, "First open": None, "Last open": None, "Clicked": False, "Clicks": 0,
+           "Last click": None, "Bounced": False, "Bounced at": None, "Reason": ""}
+    for s in (e or {}).get("status") or []:
+        if not isinstance(s, dict):
+            continue
+        typ = str(s.get("type", "")).lower()
+        times = [parse_when(v) for k, v in s.items() if k != "type" and isinstance(v, str) and
+                 any(w in k for w in ("time", "open", "click"))]
+        times = [t for t in times if t]
+        cnt = int(s["count"]) if str(s.get("count", "")).isdigit() else 0
+        if "open" in typ and "unopen" not in typ:
+            out["Opened"], out["Opens"] = True, max(out["Opens"], cnt or 1)
+            out["First open"] = parse_when(s.get("first_open")) or (min(times) if times else None)
+            out["Last open"] = parse_when(s.get("last_open")) or (max(times) if times else None)
+        elif "click" in typ:
+            out["Clicked"], out["Clicks"] = True, max(out["Clicks"], cnt or 1)
+            out["Last click"] = max(times) if times else None
+        elif "bounce" in typ:
+            out["Bounced"] = True
+            out["Bounced at"] = parse_when(s.get("bounced_time")) or (max(times) if times else None)
+            out["Reason"] = " · ".join(str(x) for x in (s.get("category"), s.get("bounced_reason")) if x)
+    if out["Clicked"] and not out["Opened"]:  # A click means it was opened, even if the image didn't load
+        out["Opened"], out["Opens"] = True, 1
+    return out
+
+
+def brand_of(send: Dict[str, Any], e: Optional[Dict[str, Any]]) -> str:
+    if send["app"] == "MY PA":
+        return "MY PA"
+    if send.get("brand"):
+        return str(send["brand"])
+    addr = send.get("from") or str(((e or {}).get("from") or {}).get("email") or "").lower()
+    dom = addr.split("@")[-1] if "@" in addr else ""
+    return next((name for word, name in BRAND_DOMAINS if word in dom), dom or "Unknown")
+
+
+def build_engagement(sends: List[Dict[str, Any]], emails: Dict[Tuple[str, str], List[Dict[str, Any]]]) -> pd.DataFrame:
+    rows = []
+    for s in sends:
+        k = (s["module"], s["id"])
+        if k not in emails:
+            continue  # Not checked (yet)
+        e = match_email(s, emails[k])
+        sig = email_signals(e)
+        seen = [t for t in (sig["Last open"], sig["Last click"]) if t]
+        rows.append({"Sent": s["sent"], "App": s["app"], "Brand": brand_of(s, e), "Firm": s["firm"], "Contact": s["contact"],
+                     "Email": s["to"], "Subject": s["subject"], "Found": e is not None, "Last seen": max(seen) if seen else None,
+                     "Zoho": zoho_url(s["module"], s["id"]), "Record": f"{s['module']}/{s['id']}", **sig})
+    cols = ["Sent", "App", "Brand", "Firm", "Contact", "Email", "Subject", "Found", "Opened", "Opens", "First open",
+            "Last open", "Clicked", "Clicks", "Last click", "Bounced", "Bounced at", "Reason", "Last seen", "Zoho", "Record"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def eng_rates(df: pd.DataFrame) -> Dict[str, Any]:
+    """Rates over the emails found in Zoho. Opens and clicks are out of delivered (sent minus bounced)."""
+    found = df[df["Found"]] if not df.empty else df
+    n = len(found)
+    b = int(found["Bounced"].sum()) if n else 0
+    o = int(found["Opened"].sum()) if n else 0
+    c = int(found["Clicked"].sum()) if n else 0
+    delivered = n - b
+    return {"sent": n, "opened": o, "clicked": c, "bounced": b, "delivered": delivered,
+            "open_rate": o / delivered if delivered else None, "click_rate": c / delivered if delivered else None,
+            "bounce_rate": b / n if n else None}
+
+
+def pct(v: Optional[float]) -> str:
+    return "–" if v is None else (f"{v * 100:.1f}%" if 0 < v < 0.1 else f"{round(v * 100)}%")
+
 
 
 # ==========================================
@@ -841,14 +1166,237 @@ with st.container(key="card-chart"):
     except Exception:
         st.altair_chart(chart, use_container_width=True)
 
+# ---------------- Engagement: opens, clicks, bounces ----------------
+eng_df: Optional[pd.DataFrame] = None
+
+
+def _table(df_: pd.DataFrame, **kw) -> None:
+    try:
+        st.dataframe(df_, width="stretch", hide_index=True, **kw)
+    except Exception:
+        st.dataframe(df_, use_container_width=True, hide_index=True, **kw)
+
+
+def _when(d: Any) -> str:
+    if d is None or (isinstance(d, float) and pd.isna(d)) or pd.isna(d):
+        return ""
+    return d.strftime("Today %H:%M") if d.date() == today else d.strftime("%a %d %b %H:%M")
+
+
+def render_zoho_connect() -> None:
+    have_client = bool(_secret("ZOHO_CLIENT_ID") and _secret("ZOHO_CLIENT_SECRET"))
+    render_html('<div style="font-size:.9rem;line-height:1.6;color:var(--muted)">'
+                "See who opened, clicked or bounced, straight from Zoho's own email tracking (the same data behind"
+                " Zoho Signals). One-off setup, read-only: this app can't change anything in Zoho.</div>")
+    if not have_client:
+        st.info("Add **ZOHO_CLIENT_ID** and **ZOHO_CLIENT_SECRET** to this app's Secrets (copy them from Lead Revival's"
+                " Secrets), save, then come back here to finish connecting.")
+        return
+    render_html('<div style="font-size:.86rem;line-height:1.6;color:var(--muted);margin-top:8px">'
+                "<b>1.</b> In <b>api-console.zoho.eu</b>, open the Self Client and go to <b>Generate Code</b>.<br>"
+                "<b>2.</b> Paste the scope below, pick <b>10 minutes</b>, add any description and click <b>Create</b>.<br>"
+                "<b>3.</b> Copy the code (starts <b>1000.</b>), paste it here and click Connect. Be quick: codes expire.</div>")
+    st.code(ZOHO_SCOPE, language=None)
+    with st.form("zoho_setup", border=False):
+        z1, z2 = columns([2.2, 1])
+        code = z1.text_input("Code from Zoho", type="password", placeholder="1000.xxxxxxxx…")
+        go = z2.form_submit_button("Connect Zoho", type="primary", **FULL_WIDTH)
+    if go:
+        if not code.strip():
+            st.warning("Paste the code from Zoho first.")
+        else:
+            with st.spinner("Asking Zoho for a permanent key…"):
+                st.session_state["zoho_setup_result"] = zoho_exchange_code(code)
+    res = st.session_state.get("zoho_setup_result") or {}
+    if res.get("error"):
+        st.error(res["error"])
+    elif res.get("refresh_token"):
+        st.success("Connected. Last step: copy this line into this app's Streamlit Secrets, save, then reboot the app.")
+        st.code(f'ZOHO_REFRESH_TOKEN = "{res["refresh_token"]}"', language=None)
+        st.caption("It's shown only here and isn't saved anywhere else, so don't share it in emails or chats.")
+
+
+with st.container(key="card-eng"):
+    section_header("02", "Engagement", "Opens, clicks and bounces on emails sent from Zoho, with who to call first.")
+    if not zoho_configured():
+        render_zoho_connect()
+    else:
+        e1, e2, e3 = columns([1.3, 1.6, 1])
+        eng_period = e1.radio("Period", ["Last 7 days", "Last 30 days"], horizontal=True, key="eng_period")
+        pick_eng_apps = e2.multiselect("App", list(APPS), default=[], placeholder="All apps", key="eng_apps")
+        recheck = e3.button("↻  Check Zoho now", key="eng_recheck", **FULL_WIDTH,
+                            help="Re-reads the latest opens, clicks and bounces from Zoho straight away.")
+        sends = engagement_sends(logs, datetime.now(UK) - timedelta(days=ENG_DAYS))
+        capped = len(sends) > ENG_MAX
+        sends = sends[:ENG_MAX]
+        bar = st.empty()
+
+        def _prog(frac: float, text: str) -> None:
+            bar.progress(min(frac, 1.0), text=text)
+
+        with st.spinner("Reading email tracking from Zoho…"):
+            eng_emails, eng_err = load_engagement(sends, force=recheck, progress=_prog)
+        bar.empty()
+        if eng_err:
+            st.warning(eng_err)
+        eng_df = build_engagement(sends, eng_emails)
+        if not sends:
+            st.info("No emails sent from Zoho in the last 30 days yet. Only emails sent with the apps' **Send via Zoho**"
+                    " button are tracked; drafts opened in Outlook aren't.")
+        elif eng_df.empty:
+            st.info("Nothing read from Zoho yet. Click **Check Zoho now**.")
+        else:
+            span = 7 if eng_period == "Last 7 days" else 30
+            p_start = today - timedelta(days=span - 1)
+            view_e = eng_df[eng_df["App"].isin(pick_eng_apps)] if pick_eng_apps else eng_df
+            sent_day = view_e["Sent"].apply(lambda x: x.date())
+            cur_e = view_e[sent_day >= p_start]
+            r = eng_rates(cur_e)
+            prev_r = eng_rates(view_e[(sent_day < p_start) & (sent_day >= p_start - timedelta(days=7))]) if span == 7 else None
+
+            def _cmp(now_v: Optional[float], before: Optional[float], lower_better: bool = False) -> str:
+                if prev_r is None or now_v is None or before is None or not prev_r["sent"]:
+                    return '<div class="d flat">&nbsp;</div>'
+                diff = round((now_v - before) * 100)
+                good = (diff < 0) if lower_better else (diff > 0)
+                return (f'<div class="d {"up" if good else "flat"}">{"+" if diff >= 0 else ""}{diff} pts vs previous week</div>')
+
+            render_html(
+                '<div class="lo-week">'
+                f'<div class="c"><div class="v">{r["sent"]:,}</div><div class="l">Emails tracked</div>'
+                f'<div class="d flat">{r["delivered"]:,} delivered</div></div>'
+                f'<div class="c"><div class="v">{pct(r["open_rate"])}</div><div class="l">Open rate · {r["opened"]:,} opened</div>'
+                f'{_cmp(r["open_rate"], prev_r and prev_r["open_rate"])}</div>'
+                f'<div class="c"><div class="v">{pct(r["click_rate"])}</div><div class="l">Click rate · {r["clicked"]:,} clicked</div>'
+                f'{_cmp(r["click_rate"], prev_r and prev_r["click_rate"])}</div>'
+                f'<div class="c"><div class="v">{pct(r["bounce_rate"])}</div><div class="l">Bounce rate · {r["bounced"]:,} bounced</div>'
+                f'{_cmp(r["bounce_rate"], prev_r and prev_r["bounce_rate"], lower_better=True)}</div>'
+                "</div>"
+            )
+            missing = int((~cur_e["Found"]).sum())
+            st.caption(f"{eng_period}, by the day each email was sent. Open and click rates are out of delivered emails."
+                       " Opens are a guide, not exact: some email apps open images automatically, others block them."
+                       + (f" {missing:,} send{'s' if missing != 1 else ''} couldn't be matched in Zoho (record deleted or merged), so"
+                          + (" they're" if missing != 1 else " it's") + " left out." if missing else "")
+                       + (f" Only the newest {ENG_MAX:,} sends are checked." if capped else ""))
+
+            # By app and by brand
+            def _breakdown(col: str, order: Optional[List[str]] = None) -> pd.DataFrame:
+                out = []
+                keys = order or sorted(cur_e[col].dropna().unique(), key=str.lower)
+                for k in keys:
+                    rr = eng_rates(cur_e[cur_e[col] == k])
+                    if rr["sent"]:
+                        out.append({col: k, "Tracked": rr["sent"], "Opened": pct(rr["open_rate"]),
+                                    "Clicked": pct(rr["click_rate"]), "Bounced": f'{rr["bounced"]:,} ({pct(rr["bounce_rate"])})'})
+                return pd.DataFrame(out, columns=[col, "Tracked", "Opened", "Clicked", "Bounced"])
+
+            b1, b2 = st.columns(2)
+            with b1:
+                st.markdown("**By app**")
+                by_app = _breakdown("App", list(APPS))
+                by_app["App"] = by_app["App"].map({"Prospect Engine": "🔵 Prospect Engine", "Lead Revival": "🟠 Lead Revival",
+                                                   "Customer Growth": "🟢 Customer Growth", "MY PA": "🟡 MY PA"})
+                _table(by_app)
+            with b2:
+                st.markdown("**By brand** (the From address)")
+                _table(_breakdown("Brand"))
+
+            # Trend: first opens and clicks per day
+            st.markdown(f"**Opens and clicks per day** · {eng_period.lower()}, by the day they happened")
+            days = [p_start + timedelta(days=i) for i in range(span)]
+            ev_rows = []
+            for _, row in view_e.iterrows():
+                if row["First open"] is not None and not pd.isna(row["First open"]):
+                    ev_rows.append({"Day": row["First open"].date(), "Signal": "Opened"})
+                if row["Last click"] is not None and not pd.isna(row["Last click"]):
+                    ev_rows.append({"Day": row["Last click"].date(), "Signal": "Clicked"})
+            evd = pd.DataFrame(ev_rows, columns=["Day", "Signal"])
+            grid = pd.MultiIndex.from_product([days, ["Opened", "Clicked"]], names=["Day", "Signal"])
+            trend = evd.groupby(["Day", "Signal"]).size().reindex(grid, fill_value=0).reset_index(name="Emails")
+            trend["Label"] = pd.to_datetime(trend["Day"]).dt.strftime("%a %d %b")
+            base = alt.Chart(trend).encode(
+                x=alt.X("Label:N", sort=[d.strftime("%a %d %b") for d in days], title=None,
+                        axis=alt.Axis(labelAngle=0, labelColor="#8C98B0", labelFontSize=11, domainColor="#2A3550", ticks=False,
+                                      labelOverlap=True,
+                                      labelExpr="split(datum.label, ' ')[0] + ' ' + split(datum.label, ' ')[1]")),
+                y=alt.Y("Emails:Q", title=None, axis=alt.Axis(labelColor="#8C98B0", gridColor="#1F2A40", domain=False,
+                                                              ticks=False, tickMinStep=1)),
+                color=alt.Color("Signal:N", scale=alt.Scale(domain=["Opened", "Clicked"], range=[OPEN_COL, CLICK_COL]),
+                                legend=alt.Legend(orient="top", title=None, labelColor="#E7EAF3", symbolType="circle")),
+                tooltip=[alt.Tooltip("Label:N", title="Day"), alt.Tooltip("Signal:N"), alt.Tooltip("Emails:Q")],
+            )
+            tchart = (alt.layer(base.mark_line(strokeWidth=2, interpolate="monotone"),
+                                base.mark_point(size=70, filled=True, stroke="#111827", strokeWidth=2))
+                      .properties(height=200, background="transparent").configure_view(strokeWidth=0).configure(font="Inter"))
+            try:
+                st.altair_chart(tchart, width="stretch")
+            except Exception:
+                st.altair_chart(tchart, use_container_width=True)
+
+            # Hot leads: opened or clicked recently, one row per record
+            seen_day = view_e["Last seen"].apply(lambda x: x.date() if x is not None and not pd.isna(x) else None)
+            hot = view_e[seen_day.apply(lambda d: bool(d) and d >= p_start) & ~view_e["Bounced"]]
+            if not hot.empty:
+                hot = (hot.sort_values("Last seen", ascending=False)
+                       .groupby("Record", sort=False)
+                       .agg({"Last seen": "max", "Firm": "first", "Contact": "first", "Email": "first", "Opens": "sum",
+                             "Clicks": "sum", "Clicked": "max", "App": lambda a: ", ".join(dict.fromkeys(a)),
+                             "Subject": "first", "Zoho": "first"})
+                       .reset_index())
+                hot["Signal"] = hot.apply(lambda x: f"🔥 Clicked ×{x['Clicks']}" if x["Clicked"] else
+                                          (f"Opened ×{x['Opens']}" if x["Opens"] > 1 else "Opened"), axis=1)
+                hot = hot.sort_values(["Clicked", "Opens", "Last seen"], ascending=[False, False, False])
+            st.markdown(f"**🔥 Hot leads · who to call first** · {len(hot):,} opened or clicked in the {eng_period.lower()}")
+            if hot.empty:
+                st.caption("No opens or clicks in this period yet.")
+            else:
+                show_h = hot.copy()
+                show_h["Last seen"] = show_h["Last seen"].apply(_when)
+                _table(show_h, height=min(38 + 35 * len(show_h), 420),
+                       column_order=["Signal", "Last seen", "Firm", "Contact", "Email", "App", "Subject", "Zoho"],
+                       column_config={
+                           "Signal": st.column_config.TextColumn("Signal", width=120),
+                           "Last seen": st.column_config.TextColumn("Last opened / clicked", width=150),
+                           "Firm": st.column_config.TextColumn("Firm / customer", width="medium"),
+                           "Subject": st.column_config.TextColumn("Email subject", width="large"),
+                           "Zoho": st.column_config.LinkColumn("Zoho", width="small", display_text="Open ↗")})
+                hx = hot[["Signal", "Last seen", "Firm", "Contact", "Email", "App", "Subject", "Zoho"]].copy()
+                hx["Last seen"] = hx["Last seen"].apply(lambda d: d.strftime("%Y-%m-%d %H:%M"))
+                h1, _ = columns([1, 3])
+                h1.download_button("⬇  Hot leads (.csv)", data=hx.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=f"hot_leads_{today.isoformat()}.csv", mime="text/csv", key="dl_hot", **FULL_WIDTH)
+
+            # Bounces: addresses to clean up in Zoho
+            bounced = cur_e[cur_e["Bounced"]].sort_values("Sent", ascending=False)
+            st.markdown(f"**↩️ Bounced · clean these up in Zoho** · {len(bounced):,} in the {eng_period.lower()}")
+            if bounced.empty:
+                st.caption("No bounces in this period.")
+            else:
+                show_b = bounced.copy()
+                show_b["Bounced at"] = show_b.apply(lambda x: _when(x["Bounced at"]) or _when(x["Sent"]), axis=1)
+                _table(show_b, height=min(38 + 35 * len(show_b), 360),
+                       column_order=["Bounced at", "Email", "Firm", "Contact", "Reason", "App", "Zoho"],
+                       column_config={
+                           "Bounced at": st.column_config.TextColumn("Bounced", width=130),
+                           "Email": st.column_config.TextColumn("Email address", width="medium"),
+                           "Firm": st.column_config.TextColumn("Firm / customer", width="medium"),
+                           "Reason": st.column_config.TextColumn("Why", width="large"),
+                           "Zoho": st.column_config.LinkColumn("Zoho", width="small", display_text="Open ↗")})
+                bx = bounced[["Sent", "Email", "Firm", "Contact", "Reason", "App", "Zoho"]].copy()
+                bx["Sent"] = bx["Sent"].apply(lambda d: d.strftime("%Y-%m-%d %H:%M"))
+                g1, _ = columns([1, 3])
+                g1.download_button("⬇  Bounces (.csv)", data=bx.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=f"bounces_{today.isoformat()}.csv", mime="text/csv", key="dl_bounce", **FULL_WIDTH)
+
 # ---------------- Weekly summary ----------------
 with st.container(key="card-week"):
-    section_header("02", "Last 7 days summary", "Highlights only, no company names. Download the PDF or copy the text"
+    section_header("03", "Last 7 days summary", "Highlights only, no company names. Download the PDF or copy the text"
                    " into an email for the team.")
     _wc, _ = st.columns([1, 3])
     wk_end = _wc.date_input("Week ending", value=today, max_value=today, format="DD/MM/YYYY", key="wk_end",
                            help="Defaults to today, covering the last 7 days. Pick an earlier date for a past week.")
-    ws = week_stats(events, wk_end)
+    ws = week_stats(events, wk_end, eng_df)
 
     def _delta(now_v: int, before: int) -> str:
         txt = _change(now_v, before)
@@ -880,7 +1428,7 @@ with st.container(key="card-week"):
 
 # ---------------- Table ----------------
 with st.container(key="card-table"):
-    section_header("03", "All activity", "Newest first. Filter, search, then open any record in Zoho.")
+    section_header("04", "All activity", "Newest first. Filter, search, then open any record in Zoho.")
     f1, f2, f3, f4 = st.columns([1, 1.3, 1.3, 1.4])
     with f1:
         period = st.selectbox("Period", ["Today", "Last 7 days", "Last 30 days", "This month", "All time"], index=4)
@@ -951,6 +1499,8 @@ with st.container(key="card-table"):
 #   GITHUB_REPO    = "sammyatt2010-hub/prospect-engine-data"
 # Optional:
 #   ZOHO_ORG       = "org20123456"        # from your Zoho address: crm.zoho.eu/crm/<this>/...
+#   ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET   # same as Lead Revival; turns on the Engagement section
+#   ZOHO_REFRESH_TOKEN                     # this app's own read-only key, from the one-off setup box
 #   PE_GITHUB_REPO / LR_GITHUB_REPO / CG_GITHUB_REPO      # only if an app saves to a different repo
 #   PE_GITHUB_TOKEN / LR_GITHUB_TOKEN / CG_GITHUB_TOKEN   # that app's own token, if GITHUB_TOKEN can't see its repo
 #   GITHUB_LOG_PATH, GITHUB_ZOHO_LEADS_PATH, GITHUB_CRM_LOG_PATH, GITHUB_CG_LOG_PATH, GITHUB_CG_CAMPAIGN_PATH

@@ -3,4 +3,4 @@ pandas
 requests
 altair
 tzdata
-fpdf2
+fpdf2>=2.8.3
